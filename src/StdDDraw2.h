@@ -24,6 +24,8 @@
 #include <StdFont.h>
 #include <StdBuf.h>
 
+#include <unordered_map>
+
 // texref-predef
 class CStdDDraw;
 class C4TexRef;
@@ -179,6 +181,95 @@ public:
 	friend class CStdGL;
 };
 
+class CStdRenderException : public std::runtime_error
+{
+public:
+	using std::runtime_error::runtime_error;
+};
+
+class CStdShader
+{
+public:
+	enum class Type : uint8_t
+	{
+		Vertex,
+		TesselationControl,
+		TesselationEvaluation,
+		Geometry,
+		Fragment
+	};
+
+	class Exception : public CStdRenderException
+	{
+	public:
+		using CStdRenderException::CStdRenderException;
+	};
+
+public:
+	CStdShader() = default;
+	explicit CStdShader(Type type, const std::string &source) : type{type}, source{source} {}
+	CStdShader(const CStdShader &) = delete;
+
+	virtual ~CStdShader() { Clear(); }
+
+	void SetMacro(const std::string &key, const std::string &value);
+	void UnsetMacro(const std::string &key);
+	void SetSource(const std::string &source);
+	void SetType(Type type);
+
+	virtual void Compile() = 0;
+	virtual void Clear();
+
+	std::string GetSource() const { return source; }
+	virtual int64_t GetHandle() const = 0;
+	std::unordered_map<std::string, std::string> GetMacros() const { return macros; }
+	virtual Type GetType() const { return type; }
+
+protected:
+	Type type;
+	std::string source;
+	std::unordered_map<std::string, std::string> macros;
+};
+
+class CStdShaderProgram
+{
+public:
+	class Exception : public CStdRenderException
+	{
+	public:
+		using CStdRenderException::CStdRenderException;
+	};
+
+public:
+	CStdShaderProgram() = default;
+	CStdShaderProgram(const CStdShaderProgram &) = delete;
+	virtual ~CStdShaderProgram() { Clear(); }
+
+	virtual explicit operator bool() const = 0;
+
+	bool AddShader(CStdShader *shader);
+
+	virtual void Link() = 0;
+	void Select();
+	static void Deselect();
+	virtual void Clear();
+
+	virtual void EnsureProgram() = 0;
+	virtual int64_t GetProgram() const = 0;
+
+	std::vector<CStdShader *> GetPendingShaders() const { return shaders; }
+	static CStdShaderProgram *GetCurrentShaderProgram();
+
+protected:
+	virtual bool AddShaderInt(CStdShader *shader) = 0;
+	virtual void OnSelect() = 0;
+	virtual void OnDeselect() = 0;
+
+protected:
+	std::vector<CStdShader *> shaders;
+	static CStdShaderProgram *currentShaderProgram;
+};
+
 // helper struct
 struct FLOAT_RECT { float left, right, top, bottom; };
 
@@ -294,8 +385,8 @@ public:
 
 	// gamma
 	void SetGamma(uint32_t dwClr1, uint32_t dwClr2, uint32_t dwClr3); // set gamma ramp
-	void DisableGamma(); // reset gamma ramp to default
-	void EnableGamma(); // set current gamma ramp
+	virtual void DisableGamma(); // reset gamma ramp to default
+	virtual void EnableGamma(); // set current gamma ramp
 	uint32_t ApplyGammaTo(uint32_t dwClr); // apply gamma to given color
 	virtual bool ApplyGammaRamp(CGammaControl &ramp, bool fForce) = 0; // really apply gamma ramp
 	virtual bool SaveDefaultGammaRamp(CStdWindow *pWindow) = 0;

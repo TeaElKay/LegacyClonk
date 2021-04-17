@@ -19,6 +19,7 @@
 
 #include <Standard.h>
 #include <StdGL.h>
+#include "C4Config.h"
 #include <C4Surface.h>
 #include <C4Log.h>
 #include <StdWindow.h>
@@ -28,6 +29,209 @@
 #include <stdio.h>
 #include <math.h>
 #include <limits.h>
+
+void CStdGLShader::Compile()
+{
+	if (shader) // recompiling?
+	{
+		glDeleteShader(shader);
+	}
+
+	GLenum t;
+	switch (type)
+	{
+	case Type::Vertex:
+		t = GL_VERTEX_SHADER;
+		break;
+
+	case Type::TesselationControl:
+		t = GL_TESS_CONTROL_SHADER;
+		break;
+
+	case Type::TesselationEvaluation:
+		t = GL_TESS_EVALUATION_SHADER;
+		break;
+
+	case Type::Geometry:
+		t = GL_GEOMETRY_SHADER;
+		break;
+
+	case Type::Fragment:
+		t = GL_FRAGMENT_SHADER;
+		break;
+
+	default:
+		throw Exception{"Invalid shader type"};
+	}
+
+	shader = glCreateShader(t);
+	if (!shader)
+	{
+		throw Exception{"Could not create shader"};
+	}
+
+	PrepareSource();
+
+	GLint status = 0;
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+	if (!status)
+	{
+		GLint size = 0;
+		glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &size);
+		if (size)
+		{
+			std::string errorMessage;
+			errorMessage.resize(size);
+			glGetShaderInfoLog(shader, size, NULL, errorMessage.data());
+			throw Exception{errorMessage};
+		}
+
+		throw Exception{"Compile failed"};
+	}
+}
+
+void CStdGLShader::Clear()
+{
+	if (shader)
+	{
+		glDeleteShader(shader);
+		shader = 0;
+	}
+
+	CStdShader::Clear();
+}
+
+void CStdGLShader::PrepareSource()
+{
+	size_t pos = source.find("#version");
+	if (pos == std::string::npos)
+	{
+		glDeleteShader(shader);
+		throw Exception{"Version directive must be first statement and may not be repeated"};
+	}
+
+	pos = source.find('\n', pos + 1);
+	assert(pos != std::string::npos);
+
+	std::string copy = source;
+	std::string buffer = "";
+
+	for (const auto &[key, value] : macros)
+	{
+		buffer.append("#define ");
+		buffer.append(key);
+		buffer.append(" ");
+		buffer.append(value);
+		buffer.append("\n");
+	}
+
+	buffer.append("#line 1\n");
+
+	copy.insert(pos + 1, buffer);
+
+	const char *s = copy.c_str();
+	glShaderSource(shader, 1, &s, nullptr);
+	glCompileShader(shader);
+}
+
+void CStdGLShaderProgram::Link()
+{
+	EnsureProgram();
+
+	glLinkProgram(shaderProgram);
+
+	GLint status = 0;
+	glGetProgramiv(shaderProgram, GL_LINK_STATUS, &status);
+	if (!status)
+	{
+		GLint size = 0;
+		glGetProgramiv(shaderProgram, GL_INFO_LOG_LENGTH, &size);
+		assert(size);
+		if (size)
+		{
+			std::string errorMessage;
+			errorMessage.resize(size);
+			glGetProgramInfoLog(shaderProgram, size, NULL, errorMessage.data());
+			throw Exception{errorMessage};
+		}
+
+		throw Exception{"Link failed"};
+	}
+
+	glValidateProgram(shaderProgram);
+	glGetProgramiv(shaderProgram, GL_VALIDATE_STATUS, &status);
+	if (!status)
+	{
+		GLint size = 0;
+		glGetProgramiv(shaderProgram, GL_INFO_LOG_LENGTH, &size);
+		if (size)
+		{
+			std::string errorMessage;
+			errorMessage.resize(size);
+			glGetProgramInfoLog(shaderProgram, size, NULL, errorMessage.data());
+			throw Exception{errorMessage};
+		}
+
+		throw Exception{"Validation failed"};
+	}
+
+	for (const auto &shader : shaders)
+	{
+		glDetachShader(shaderProgram, dynamic_cast<CStdGLShader *>(shader)->GetHandle());
+	}
+
+	shaders.clear();
+}
+
+void CStdGLShaderProgram::Clear()
+{
+	for (const auto &shader : shaders)
+	{
+		glDetachShader(shaderProgram, dynamic_cast<CStdGLShader *>(shader)->GetHandle());
+	}
+
+	if (shaderProgram)
+	{
+		glDeleteProgram(shaderProgram);
+		shaderProgram = 0;
+	}
+
+	attributeLocations.clear();
+	uniformLocations.clear();
+
+	CStdShaderProgram::Clear();
+}
+
+void CStdGLShaderProgram::EnsureProgram()
+{
+	if (!shaderProgram)
+	{
+		shaderProgram = glCreateProgram();
+	}
+	assert(shaderProgram);
+}
+
+bool CStdGLShaderProgram::AddShaderInt(CStdShader *shader)
+{
+	if (auto *s = dynamic_cast<CStdGLShader *>(shader); s)
+	{
+		glAttachShader(shaderProgram, s->GetHandle());
+		return true;
+	}
+
+	return false;
+}
+
+void CStdGLShaderProgram::OnSelect()
+{
+	assert(shaderProgram);
+	glUseProgram(shaderProgram);
+}
+
+void CStdGLShaderProgram::OnDeselect()
+{
+	glUseProgram(GL_NONE);
+}
 
 static void glColorDw(const uint32_t dwClr)
 {
@@ -177,7 +381,21 @@ void CStdGL::PerformBlt(CBltData &rBltData, C4TexRef *const pTex,
 	}
 	// reset MOD2 for completely black modulations
 	if (fMod2 && !fAnyModNotBlack) fMod2 = 0;
-	if (shader)
+	if (BlitShader)
+	{
+		dwModMask = 0;
+		if (fMod2 && BlitShaderMod2)
+		{
+			BlitShaderMod2.Select();
+		}
+		else
+		{
+			BlitShader.Select();
+		}
+
+		if (!fModClr) glColor4f(1.0f, 1.0f, 1.0f, 0.0f);
+	}
+	else if (shader)
 	{
 		glEnable(GL_FRAGMENT_SHADER_ATI);
 		if (!fModClr) glColor4f(1.0f, 1.0f, 1.0f, 0.0f);
@@ -285,7 +503,11 @@ void CStdGL::PerformBlt(CBltData &rBltData, C4TexRef *const pTex,
 	}
 	glEnd();
 	glLoadIdentity();
-	if (shader)
+	if (BlitShader)
+	{
+		CStdShaderProgram::Deselect();
+	}
+	else if (shader)
 	{
 		glDisable(GL_FRAGMENT_SHADER_ATI);
 	}
@@ -337,7 +559,26 @@ void CStdGL::BlitLandscape(C4Surface *const sfcSource, C4Surface *const sfcSourc
 		glActiveTexture(GL_TEXTURE0);
 	}
 	uint32_t dwModMask = 0;
-	if (shader)
+	if (LandscapeShader)
+	{
+		LandscapeShader.Select();
+
+		if (sfcSource2)
+		{
+			static GLfloat value[4] = { -0.6f / 3, 0.0f, 0.6f / 3, 0.0f };
+			value[0] += 0.05f; value[1] += 0.05f; value[2] += 0.05f;
+			GLfloat mod[4];
+			for (int i = 0; i < 3; ++i)
+			{
+				if (value[i] > 0.9f) value[i] = -0.3f;
+				mod[i] = (value[i] > 0.3f ? 0.6f - value[i] : value[i]) / 3.0f;
+			}
+			mod[3] = 0;
+
+			LandscapeShader.SetUniform("modulation", glUniform4fv, 1, mod);
+		}
+	}
+	else if (shader)
 	{
 		glEnable(GL_FRAGMENT_SHADER_ATI);
 		if (sfcSource2)
@@ -532,6 +773,10 @@ void CStdGL::BlitLandscape(C4Surface *const sfcSource, C4Surface *const sfcSourc
 			}
 		}
 	}
+	if (LandscapeShader)
+	{
+		CStdShaderProgram::Deselect();
+	}
 	if (shader)
 	{
 		glDisable(GL_FRAGMENT_SHADER_ATI);
@@ -615,6 +860,9 @@ void CStdGL::DrawQuadDw(C4Surface *const sfcTarget, int *const ipVtx,
 {
 	// prepare rendering to target
 	if (!PrepareRendering(sfcTarget)) return;
+
+	CStdGLShaderProgram::Deselect();
+
 	// apply global modulation
 	ClrByCurrentBlitMod(dwClr1);
 	ClrByCurrentBlitMod(dwClr2);
@@ -658,6 +906,9 @@ void CStdGL::DrawLineDw(C4Surface *const sfcTarget,
 	assert(sfcTarget->IsRenderTarget());
 	// prepare rendering to target
 	if (!PrepareRendering(sfcTarget)) return;
+
+	CStdGLShaderProgram::Deselect();
+
 	// set blitting state
 	const int iAdditive = dwBlitMode & C4GFXBLIT_ADDITIVE;
 	// use a different blendfunc here, because GL_LINE_SMOOTH expects this one
@@ -691,6 +942,9 @@ void CStdGL::DrawPixInt(C4Surface *const sfcTarget,
 	assert(sfcTarget->IsRenderTarget());
 
 	if (!PrepareRendering(sfcTarget)) return;
+
+	CStdGLShaderProgram::Deselect();
+
 	const int iAdditive = dwBlitMode & C4GFXBLIT_ADDITIVE;
 	// use a different blendfunc here because of GL_POINT_SMOOTH
 	glBlendFunc(GL_SRC_ALPHA, iAdditive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
@@ -712,6 +966,11 @@ static void DefineShaderARB(const char *const p, GLuint &s)
 			s, errPos, glGetString(GL_PROGRAM_ERROR_STRING_ARB));
 		s = 0;
 	}
+}
+
+static void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
+{
+	LogF("source: %d, type: %d, id: %ul, severity: %d, message: %s\n", source, type, id, severity, message);
 }
 
 bool CStdGL::RestoreDeviceObjects()
@@ -948,6 +1207,136 @@ bool CStdGL::RestoreDeviceObjects()
 			GL_REG_0_ATI, GL_NONE, GL_NONE);
 		glEndFragmentShaderATI();
 	}
+	else if (!BlitShader)
+	{
+		if (glDebugMessageCallback)
+		{
+			glEnable(GL_DEBUG_OUTPUT);
+			glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+			glDebugMessageCallback(&MessageCallback, nullptr);
+		}
+
+		try
+		{
+			CStdGLShader vertexShader{CStdShader::Type::Vertex,
+				R"(
+				#version 120
+
+				void main()
+				{
+					gl_Position = ftransform();
+					gl_FrontColor = gl_Color;
+					gl_TexCoord[0] = gl_TextureMatrix[0] * gl_MultiTexCoord0;
+				#ifdef LC_COLOR_ANIMATION
+					gl_TexCoord[1] = gl_TextureMatrix[0] * gl_MultiTexCoord1;
+					gl_TexCoord[2] = gl_TextureMatrix[0] * gl_MultiTexCoord2;
+				#endif
+				}
+				)"
+			};
+
+			vertexShader.Compile();
+
+			CStdGLShader blitFragmentShader{CStdShader::Type::Fragment,
+				R"(
+				#version 120
+
+				uniform sampler2D textureSampler;
+
+				void main()
+				{
+					vec4 fragColor = texture2D(textureSampler, gl_TexCoord[0].st);
+
+				#ifdef LC_MOD2
+					fragColor.rgb += gl_Color.rgb;
+					fragColor.rgb = clamp(fragColor.rgb * 2.0 - 1.0, 0.0, 1.0);
+				#else
+					fragColor.rgb *= gl_Color.rgb;
+					fragColor.rgb = clamp(fragColor.rgb, 0.0, 1.0);
+					fragColor.a = clamp(fragColor.a + gl_Color.a, 0.0, 1.0);
+				#endif
+					gl_FragColor = fragColor;
+				}
+				)"
+			};
+
+			blitFragmentShader.Compile();
+
+			BlitShader.AddShader(&vertexShader);
+			BlitShader.AddShader(&blitFragmentShader);
+			BlitShader.Link();
+
+			blitFragmentShader.SetMacro("LC_MOD2", "1");
+			blitFragmentShader.Compile();
+
+			BlitShaderMod2.AddShader(&vertexShader);
+			BlitShaderMod2.AddShader(&blitFragmentShader);
+			BlitShaderMod2.Link();
+
+			CStdGLShader landscapeFragmentShader{CStdShader::Type::Fragment,
+				R"(
+				#version 120
+
+				uniform sampler2D textureSampler;
+				#ifdef LC_COLOR_ANIMATION
+				uniform sampler2D maskSampler;
+				uniform sampler2D liquidSampler;
+				uniform vec4 modulation;
+				#endif
+
+				void main()
+				{
+					vec4 fragColor = texture2D(textureSampler,  gl_TexCoord[0].st);
+				#ifdef LC_COLOR_ANIMATION
+					float mask = texture2D(maskSampler,  gl_TexCoord[1].st).a;
+					vec3 liquid = texture2D(liquidSampler,  gl_TexCoord[2].st).rgb;
+					liquid -= vec3(0.5, 0.5, 0.5);
+					liquid = vec3(dot(liquid, modulation.rgb));
+					liquid *= mask;
+					fragColor.rgb = fragColor.rgb + liquid;
+				#endif
+					fragColor.rgb = clamp(fragColor.rgb, 0.0, 1.0) * gl_Color.rgb;
+					fragColor.a = clamp(fragColor.a + gl_Color.a, 0.0, 1.0);
+
+					gl_FragColor = fragColor;
+				}
+				)"};
+
+			if (Config.Graphics.ColorAnimation)
+			{
+				vertexShader.SetMacro("LC_COLOR_ANIMATION", "1");
+				vertexShader.Compile();
+				landscapeFragmentShader.SetMacro("LC_COLOR_ANIMATION", "1");
+			}
+
+			landscapeFragmentShader.Compile();
+
+			LandscapeShader.AddShader(&vertexShader);
+			LandscapeShader.AddShader(&landscapeFragmentShader);
+			LandscapeShader.Link();
+
+			for (auto *const shader : {&BlitShader, &BlitShaderMod2, &LandscapeShader})
+			{
+				shader->Select();
+				shader->SetUniform("texIndent", DDrawCfg.fTexIndent);
+				shader->SetUniform("blitOffset", DDrawCfg.fBlitOff);
+				shader->SetUniform("textureSampler", glUniform1i, 0);
+
+				if (shader == &LandscapeShader)
+				{
+					shader->SetUniform("maskSampler", glUniform1i, 1);
+					shader->SetUniform("liquidSampler", glUniform1i, 2);
+				}
+			}
+
+			CStdShaderProgram::Deselect();
+		}
+		catch (const CStdRenderException &e)
+		{
+			LogFatal(e.what());
+			return Active = false;
+		}
+	}
 	// done
 	return Active;
 }
@@ -967,6 +1356,12 @@ bool CStdGL::InvalidateDeviceObjects()
 	{
 		glDeleteFragmentShaderATI(shader);
 		shader = 0;
+	}
+	if (BlitShader)
+	{
+		BlitShader.Clear();
+		BlitShaderMod2.Clear();
+		LandscapeShader.Clear();
 	}
 	return true;
 }
