@@ -3911,7 +3911,7 @@ public:
 	virtual bool hasNaming() override { return true; }
 	virtual bool isVerbose() override { return false; }
 
-	virtual bool Name(const char *szName) override
+	virtual NameGuard Name(const char *szName) override
 	{
 		// match possible? (no match yet / continued match)
 		if (!iMatchStart || haveCurrentMatch())
@@ -3925,7 +3925,7 @@ public:
 					iMatchCount++;
 				}
 		iDepth++;
-		return true;
+		return {this, true};
 	}
 
 	virtual bool Default(const char *szName) override
