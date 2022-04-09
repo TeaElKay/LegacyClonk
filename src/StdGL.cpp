@@ -247,8 +247,6 @@ CStdGL::CStdGL()
 	Default();
 	// global ptr
 	pGL = this;
-	shader = 0;
-	shaders[0] = 0;
 }
 
 CStdGL::~CStdGL()
@@ -395,40 +393,6 @@ void CStdGL::PerformBlt(CBltData &rBltData, C4TexRef *const pTex,
 
 		if (!fModClr) glColor4f(1.0f, 1.0f, 1.0f, 0.0f);
 	}
-	else if (shader)
-	{
-		glEnable(GL_FRAGMENT_SHADER_ATI);
-		if (!fModClr) glColor4f(1.0f, 1.0f, 1.0f, 0.0f);
-		dwModMask = 0;
-		if (Saturation < 255)
-		{
-			glBindFragmentShaderATI(fMod2 ? shader + 3 : shader + 2);
-			const GLfloat value[4] =
-				{ Saturation / 255.0f, Saturation / 255.0f, Saturation / 255.0f, 1.0f };
-			glSetFragmentShaderConstantATI(GL_CON_1_ATI, value);
-		}
-		else
-		{
-			glBindFragmentShaderATI(fMod2 ? shader + 1 : shader);
-		}
-	}
-	else if (shaders[0])
-	{
-		glEnable(GL_FRAGMENT_PROGRAM_ARB);
-		if (!fModClr) glColor4f(1.0f, 1.0f, 1.0f, 0.0f);
-		dwModMask = 0;
-		if (Saturation < 255)
-		{
-			glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, shaders[fMod2 ? 3 : 2]);
-			const GLfloat value[4] =
-				{ Saturation / 255.0f, Saturation / 255.0f, Saturation / 255.0f, 1.0f };
-			glProgramLocalParameter4fvARB(GL_FRAGMENT_PROGRAM_ARB, 0, value);
-		}
-		else
-		{
-			glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, shaders[fMod2 ? 1 : 0]);
-		}
-	}
 	// modulated blit
 	else if (fModClr)
 	{
@@ -507,14 +471,7 @@ void CStdGL::PerformBlt(CBltData &rBltData, C4TexRef *const pTex,
 	{
 		CStdShaderProgram::Deselect();
 	}
-	else if (shader)
-	{
-		glDisable(GL_FRAGMENT_SHADER_ATI);
-	}
-	else if (shaders[0])
-	{
-		glDisable(GL_FRAGMENT_PROGRAM_ARB);
-	}
+
 	if (pApp->GetScale() != 1.f || (!fExact && !DDrawCfg.PointFiltering))
 	{
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -577,66 +534,6 @@ void CStdGL::BlitLandscape(C4Surface *const sfcSource, C4Surface *const sfcSourc
 
 			LandscapeShader.SetUniform("modulation", glUniform4fv, 1, mod);
 		}
-	}
-	else if (shader)
-	{
-		glEnable(GL_FRAGMENT_SHADER_ATI);
-		if (sfcSource2)
-		{
-			glBindFragmentShaderATI(shader + 4);
-			static GLfloat value[4] = { -0.6f / 3, 0.0f, 0.6f / 3, 0.0f };
-			value[0] += 0.05f; value[1] += 0.05f; value[2] += 0.05f;
-			GLfloat mod[4];
-			for (int i = 0; i < 3; ++i)
-			{
-				if (value[i] > 0.9f) value[i] = -0.3f;
-				mod[i] = (value[i] > 0.3f ? 0.6f - value[i] : value[i]) / 3.0f;
-			}
-			mod[3] = 0;
-			glSetFragmentShaderConstantATI(GL_CON_2_ATI, mod);
-		}
-		else if (Saturation < 255)
-		{
-			glBindFragmentShaderATI(shader + 2);
-			const GLfloat value[4] =
-				{ Saturation / 255.0f, Saturation / 255.0f, Saturation / 255.0f, 1.0f };
-			glSetFragmentShaderConstantATI(GL_CON_1_ATI, value);
-		}
-		else
-		{
-			glBindFragmentShaderATI(shader);
-		}
-		dwModMask = 0;
-	}
-	else if (shaders[0])
-	{
-		glEnable(GL_FRAGMENT_PROGRAM_ARB);
-		if (sfcSource2)
-		{
-			glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, shaders[4]);
-			static GLfloat value[4] = { -0.6f / 3, 0.0f, 0.6f / 3, 0.0f };
-			value[0] += 0.05f; value[1] += 0.05f; value[2] += 0.05f;
-			GLfloat mod[4];
-			for (int i = 0; i < 3; ++i)
-			{
-				if (value[i] > 0.9f) value[i] = -0.3f;
-				mod[i] = (value[i] > 0.3f ? 0.6f - value[i] : value[i]) / 3.0f;
-			}
-			mod[3] = 0;
-			glProgramLocalParameter4fvARB(GL_FRAGMENT_PROGRAM_ARB, 1, mod);
-		}
-		else if (Saturation < 255)
-		{
-			glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, shaders[2]);
-			const GLfloat value[4] =
-				{ Saturation / 255.0f, Saturation / 255.0f, Saturation / 255.0f, 1.0f };
-			glProgramLocalParameter4fvARB(GL_FRAGMENT_PROGRAM_ARB, 0, value);
-		}
-		else
-		{
-			glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, shaders[0]);
-		}
-		dwModMask = 0;
 	}
 	// texture environment
 	else
@@ -776,14 +673,6 @@ void CStdGL::BlitLandscape(C4Surface *const sfcSource, C4Surface *const sfcSourc
 	if (LandscapeShader)
 	{
 		CStdShaderProgram::Deselect();
-	}
-	if (shader)
-	{
-		glDisable(GL_FRAGMENT_SHADER_ATI);
-	}
-	else if (shaders[0])
-	{
-		glDisable(GL_FRAGMENT_PROGRAM_ARB);
 	}
 	if (sfcSource2)
 	{
@@ -955,19 +844,6 @@ void CStdGL::DrawPixInt(C4Surface *const sfcTarget,
 	glEnd();
 }
 
-static void DefineShaderARB(const char *const p, GLuint &s)
-{
-	glBindProgramARB(GL_FRAGMENT_PROGRAM_ARB, s);
-	glProgramStringARB(GL_FRAGMENT_PROGRAM_ARB, GL_PROGRAM_FORMAT_ASCII_ARB, strlen(p), p);
-	if (GL_INVALID_OPERATION == glGetError())
-	{
-		GLint errPos; glGetIntegerv(GL_PROGRAM_ERROR_POSITION_ARB, &errPos);
-		fprintf(stderr, "ARB program%d:%d: Error: %s\n",
-			s, errPos, glGetString(GL_PROGRAM_ERROR_STRING_ARB));
-		s = 0;
-	}
-}
-
 static void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
 {
 	LogF("source: %d, type: %d, id: %ul, severity: %d, message: %s\n", source, type, id, severity, message);
@@ -992,222 +868,7 @@ bool CStdGL::RestoreDeviceObjects()
 	// reset blit states
 	dwBlitMode = 0;
 
-	if (!DDrawCfg.Shader)
-	{
-	}
-	else if (GLEW_ARB_fragment_program)
-	{
-		if (!shaders[0])
-		{
-			glGenProgramsARB(6, shaders);
-
-			DefineShaderARB("!!ARBfp1.0\n"
-				"TEMP tmp;\n"
-				// sample the texture
-				"TXP tmp, fragment.texcoord[0], texture, 2D;\n"
-				// perform the modulation
-				"MUL tmp.rgb, tmp, fragment.color.primary;\n"
-				// Apparently, it is not possible to directly add and mul into the same register or something.
-				"ADD_SAT result.color.rgb, tmp, {0,0,0,0};\n"
-				"ADD_SAT result.color.a, tmp, fragment.color.primary;\n"
-				"END\n", shaders[0]);
-
-			DefineShaderARB("!!ARBfp1.0\n"
-				"ATTRIB tex = fragment.texcoord;\n"
-				"ATTRIB col = fragment.color.primary;\n"
-				"OUTPUT outColor = result.color;\n"
-				"TEMP tmp;\n"
-				// sample the texture
-				"TXP tmp, tex, texture, 2D;\n"
-				// perform the modulation
-				"ADD tmp, tmp, col;\n"
-				"MAD_SAT outColor, tmp, { 2.0, 2.0, 2.0, 1.0 }, { -1.0, -1.0, -1.0, 0.0 };\n"
-				"END\n", shaders[1]);
-
-			DefineShaderARB("!!ARBfp1.0\n"
-				"ATTRIB tex = fragment.texcoord;\n"
-				"ATTRIB col = fragment.color.primary;\n"
-				"OUTPUT outColor = result.color;\n"
-				"TEMP tmp, grey;\n"
-				// sample the texture
-				"TXP tmp, tex, texture, 2D;\n"
-				// perform the modulation
-				"MUL tmp.rgb, tmp, col;\n"
-				// grey
-				"DP3 grey, tmp, { 0.299, 0.587, 0.114, 1.0 };\n"
-				"LRP tmp.rgb, program.local[0], tmp, grey;"
-				"ADD_SAT tmp.a, tmp, col;\n"
-				"MOV outColor, tmp;\n"
-				"END\n", shaders[2]);
-
-			DefineShaderARB("!!ARBfp1.0\n"
-				"ATTRIB tex = fragment.texcoord;"
-				"ATTRIB col = fragment.color.primary;"
-				"OUTPUT outColor = result.color;"
-				"TEMP tmp, grey;"
-				// sample the texture
-				"TXP tmp, tex, texture, 2D;"
-				// perform the modulation
-				"ADD tmp, tmp, col;\n"
-				"MAD_SAT tmp, tmp, { 2.0, 2.0, 2.0, 1.0 }, { -1.0, -1.0, -1.0, 0.0 };\n"
-				// grey
-				"DP3 grey, tmp, { 0.299, 0.587, 0.114, 1.0 };\n"
-				"LRP tmp.rgb, program.local[0], tmp, grey;"
-				"MOV outColor, tmp;\n"
-				"END", shaders[3]);
-
-			DefineShaderARB("!!ARBfp1.0\n"
-				"TEMP tmp;\n"
-				"TEMP mask;\n"
-				"TEMP liquid;\n"
-				// sample the texture
-				"TXP tmp, fragment.texcoord, texture[0], 2D;\n"
-				"TXP mask, fragment.texcoord, texture[1], 2D;\n"
-				"TXP liquid, fragment.texcoord[2], texture[2], 2D;\n"
-				// animation
-				"SUB liquid.rgb, liquid, {0.5, 0.5, 0.5, 0};\n"
-				"DP3 liquid.rgb, liquid, program.local[1];\n"
-				"MUL liquid.rgb, mask.aaaa, liquid;\n"
-				"ADD_SAT tmp.rgb, liquid, tmp;\n"
-				// perform the modulation
-				"MUL tmp.rgb, tmp, fragment.color.primary;\n"
-				"ADD_SAT tmp.a, tmp, fragment.color.primary;\n"
-				"MOV result.color, tmp;\n"
-				"END\n", shaders[4]);
-		}
-	}
-	else if (!shader && GLEW_ATI_fragment_shader)
-	{
-		shader = glGenFragmentShadersATI(6);
-		if (!shader) return Active;
-
-		// Standard color modulation and alpha addition
-		glBindFragmentShaderATI(shader);
-		glBeginFragmentShaderATI();
-		// Load the contents of the texture into a register
-		glSampleMapATI(GL_REG_0_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		// X(d) = X(a1) * X(a2)
-		glColorFragmentOp2ATI(GL_MUL_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		// A(d) = BoundBy(A(a1) + A(a2), 0, 1)
-		glAlphaFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_SATURATE_BIT_ATI,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		glEndFragmentShaderATI();
-
-		// Spezial "mod2" color addition and alpha addition
-		glBindFragmentShaderATI(shader + 1);
-		glBeginFragmentShaderATI();
-		// Load the contents of the texture into a register
-		glSampleMapATI(GL_REG_0_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		// X(d) = BoundBy((X(a1) + X(a2) - 0.5) * 2, 0, 1)
-		glColorFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_2X_BIT_ATI | GL_SATURATE_BIT_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_BIAS_BIT_ATI);
-		// A(d) = BoundBy(A(a1) + A(a2), 0, 1)
-		glAlphaFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_SATURATE_BIT_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE);
-		glEndFragmentShaderATI();
-
-		// Standard color modulation and alpha addition, with additional greying
-		glBindFragmentShaderATI(shader + 2);
-		glBeginFragmentShaderATI();
-		// Load the contents of the texture into a register
-		glSampleMapATI(GL_REG_0_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		// Define the factors for each color
-		const GLfloat grey[4] = { 0.299f, 0.587f, 0.114f, 1.0f };
-		glSetFragmentShaderConstantATI(GL_CON_0_ATI, grey);
-		// X(d) = X(a1) * X(a2)
-		glColorFragmentOp2ATI(GL_MUL_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		// A(d) = BoundBy(A(a1) + A(a2), 0, 1)
-		glAlphaFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_SATURATE_BIT_ATI,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		// X(d) = R(a1) * R(a2) + G(a1) * G(a2) + B(a1) * B(a2)
-		glColorFragmentOp2ATI(GL_DOT3_ATI,
-			GL_REG_1_ATI, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_CON_0_ATI, GL_NONE, GL_NONE);
-		// X(d) = X(a1) * X(a2) + (1 - X(a1)) * X(a3)
-		// CON_1 is defined in PerformBlt.
-		glColorFragmentOp3ATI(GL_LERP_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_SATURATE_BIT_ATI,
-			GL_CON_1_ATI, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_REG_1_ATI, GL_NONE, GL_NONE);
-		glEndFragmentShaderATI();
-
-		// Spezial "mod2" color addition and alpha addition
-		glBindFragmentShaderATI(shader + 3);
-		glBeginFragmentShaderATI();
-		// Load the contents of the texture into a register
-		glSampleMapATI(GL_REG_0_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		// Define the factors for each color
-		glSetFragmentShaderConstantATI(GL_CON_0_ATI, grey);
-		// X(d) = BoundBy((X(a1) + X(a2) - 0.5) * 2, 0, 1)
-		glColorFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_2X_BIT_ATI | GL_SATURATE_BIT_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_BIAS_BIT_ATI);
-		// A(d) = BoundBy(A(a1) + A(a2), 0, 1)
-		glAlphaFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_SATURATE_BIT_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE);
-		// X(d) = R(a1) * R(a2) + G(a1) * G(a2) + B(a1) * B(a2)
-		glColorFragmentOp2ATI(GL_DOT3_ATI,
-			GL_REG_1_ATI, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_CON_0_ATI, GL_NONE, GL_NONE);
-		// X(d) = X(a1) * X(a2) + (1 - X(a1)) * X(a3)
-		glColorFragmentOp3ATI(GL_LERP_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_SATURATE_BIT_ATI,
-			GL_CON_1_ATI, GL_NONE, GL_NONE,
-			GL_REG_1_ATI, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		glEndFragmentShaderATI();
-
-		// Spezial animated landscape shader
-		glBindFragmentShaderATI(shader + 4);
-		glBeginFragmentShaderATI();
-		// Load the contents of the textures into two registers
-		glSampleMapATI(GL_REG_0_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		glSampleMapATI(GL_REG_1_ATI, GL_TEXTURE1, GL_SWIZZLE_STR_ATI);
-		glSampleMapATI(GL_REG_2_ATI, GL_TEXTURE2, GL_SWIZZLE_STR_ATI);
-		// to test: load both textures at the same coord glSampleMapATI (GL_REG_1_ATI, GL_TEXTURE0, GL_SWIZZLE_STR_ATI);
-		// X(d) = X(a1) * X(a2)
-		glColorFragmentOp2ATI(GL_MUL_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_NONE,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		// A(d) = BoundBy(A(a1) + A(a2), 0, 1)
-		glAlphaFragmentOp2ATI(GL_ADD_ATI,
-			GL_REG_0_ATI, GL_SATURATE_BIT_ATI,
-			GL_PRIMARY_COLOR_ARB, GL_NONE, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		// R(d) = R(a1) * R(a2) + R(a3)
-		glColorFragmentOp2ATI(GL_DOT3_ATI,
-			GL_REG_2_ATI, GL_NONE, GL_NONE,
-			GL_CON_2_ATI, GL_NONE, GL_NONE,
-			GL_REG_2_ATI, GL_NONE, GL_BIAS_BIT_ATI);
-		glColorFragmentOp3ATI(GL_MAD_ATI,
-			GL_REG_0_ATI, GL_NONE, GL_SATURATE_BIT_ATI,
-			GL_REG_2_ATI, GL_NONE, GL_NONE,
-			GL_REG_1_ATI, GL_ALPHA, GL_NONE,
-			GL_REG_0_ATI, GL_NONE, GL_NONE);
-		glEndFragmentShaderATI();
-	}
-	else if (!BlitShader)
+	if (DDrawCfg.Shader && !BlitShader)
 	{
 		if (glDebugMessageCallback)
 		{
@@ -1352,11 +1013,6 @@ bool CStdGL::InvalidateDeviceObjects()
 	// invalidate font objects
 	// invalidate primary surfaces
 	if (lpPrimary) lpPrimary->Clear();
-	if (shader)
-	{
-		glDeleteFragmentShaderATI(shader);
-		shader = 0;
-	}
 	if (BlitShader)
 	{
 		BlitShader.Clear();

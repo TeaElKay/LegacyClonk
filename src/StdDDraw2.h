@@ -277,7 +277,7 @@ struct FLOAT_RECT { float left, right, top, bottom; };
 class CStdDDraw
 {
 public:
-	CStdDDraw() : Saturation(255) { lpDDrawPal = &Pal; }
+	CStdDDraw() { lpDDrawPal = &Pal; }
 	virtual ~CStdDDraw() { lpDDraw = nullptr; }
 
 public:
@@ -300,7 +300,6 @@ protected:
 	uint32_t dwBlitMode; // extra flags for blit
 	CClrModAddMap *pClrModMap; // map to be used for global color modulation (invalid if !fUseClrModMap)
 	bool fUseClrModMap; // if set, pClrModMap will be checked for color modulations
-	unsigned char Saturation; // if < 255, an extra filter is used to reduce the saturation
 
 public:
 	// General

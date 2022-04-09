@@ -185,10 +185,6 @@ protected:
 	GLenum sfcFmt; // texture surface format
 	CStdGLCtx MainCtx; // main GL context
 	CStdGLCtx *pCurrCtx; // current context
-	// continously numbered shaders for ATI cards
-	unsigned int shader;
-	// shaders for the ARB extension
-	GLuint shaders[6];
 	CStdGLShaderProgram BlitShader;
 	CStdGLShaderProgram BlitShaderMod2;
 	CStdGLShaderProgram LandscapeShader;
