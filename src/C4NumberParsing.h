@@ -48,15 +48,15 @@ T ParseNumber(std::string_view s, const unsigned base = 10)
 
 	if (ec == std::errc{} && end != sEnd)
 	{
-		throw std::invalid_argument{std::format("ParseNumber: Unexpected garbage after integer: \"{}\"", std::string_view{end, sEnd})};
+		throw std::invalid_argument{fmt::format("ParseNumber: Unexpected garbage after integer: \"{}\"", std::string_view{end, sEnd})};
 	}
 
 	if (ec == std::errc::result_out_of_range)
 	{
 		using limits = std::numeric_limits<T>;
 		const auto limit = (std::signed_integral<T> && s.starts_with('-')) ? limits::min() : limits::max();
-		throw NumberRangeError<T>{std::format("ParseNumber: Value out of range: \"{}\"", s), limit};
+		throw NumberRangeError<T>{fmt::format("ParseNumber: Value out of range: \"{}\"", s), limit};
 	}
 
-	throw std::invalid_argument{std::format("ParseNumber: Not a number: \"{}\"", s)};
+	throw std::invalid_argument{fmt::format("ParseNumber: Not a number: \"{}\"", s)};
 }

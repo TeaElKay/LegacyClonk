@@ -192,7 +192,7 @@ void C4AudioSystemSdl::ThrowIfFailed(const char *const funcName, const bool fail
 			errorMessage = Mix_GetError();
 		}
 
-		throw std::runtime_error{std::format("SDL_mixer: {} failed: {}", funcName, errorMessage)};
+		throw std::runtime_error{fmt::format("SDL_mixer: {} failed: {}", funcName, errorMessage)};
 	}
 }
 

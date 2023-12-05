@@ -221,7 +221,7 @@ WNDCLASSEX C4ViewportWindow::GetWindowClass(const HINSTANCE instance) const
 
 bool C4ViewportWindow::GetPositionData(std::string &id, std::string &subKey, bool &storeSize) const
 {
-	id = std::format("Viewport{}", cvp->Player + 1);
+	id = fmt::format("Viewport{}", cvp->Player + 1);
 	subKey = Config.GetSubkeyPath("Console");
 	storeSize = true;
 	return true;

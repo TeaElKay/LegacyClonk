@@ -232,13 +232,13 @@ C4ValueArray *C4ValueArray::SetLength(int32_t size)
 bool C4ValueArray::hasIndex(const C4Value &index) const
 {
 	C4Value copyIndex = index;
-	if (!copyIndex.ConvertTo(C4V_Int)) throw std::runtime_error{std::format("array access: can not convert \"{}\" to int", GetC4VName(index.GetType()))};
+	if (!copyIndex.ConvertTo(C4V_Int)) throw std::runtime_error{fmt::format("array access: can not convert \"{}\" to int", GetC4VName(index.GetType()))};
 	return copyIndex._getInt() < iSize;
 }
 
 C4Value &C4ValueArray::operator[](const C4Value &index)
 {
 	C4Value copyIndex = index;
-	if (!copyIndex.ConvertTo(C4V_Int)) throw std::runtime_error{std::format("array access: can not convert \"{}\" to int", GetC4VName(index.GetType()))};
+	if (!copyIndex.ConvertTo(C4V_Int)) throw std::runtime_error{fmt::format("array access: can not convert \"{}\" to int", GetC4VName(index.GetType()))};
 	return (*this)[copyIndex._getInt()];
 }

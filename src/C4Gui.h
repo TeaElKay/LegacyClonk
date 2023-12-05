@@ -1604,7 +1604,7 @@ class DlgKeyCB : public BaseTemplate<TargetClass, BasePars...>
 {
 private:
 	using Base = BaseTemplate<TargetClass, BasePars...>;
-	using CallbackFunc = Base::CallbackFunc;
+	using CallbackFunc = typename Base::CallbackFunc;
 
 public:
 	DlgKeyCB(TargetClass &rTarget, const BasePars &... pars, CallbackFunc pFuncDown, CallbackFunc pFuncUp = nullptr, CallbackFunc pFuncPressed = nullptr)
@@ -1625,7 +1625,7 @@ class ControlKeyCB : public BaseTemplate<TargetClass, BasePars...>
 {
 private:
 	using Base = BaseTemplate<TargetClass, BasePars...>;
-	using CallbackFunc = Base::CallbackFunc;
+	using CallbackFunc = typename Base::CallbackFunc;
 
 public:
 	ControlKeyCB(TargetClass &rTarget, const BasePars &... pars, CallbackFunc pFuncDown, CallbackFunc pFuncUp = nullptr, CallbackFunc pFuncPressed = nullptr)

@@ -329,7 +329,7 @@ void ConfigDialog::UserClose(bool ok)
 	}
 }
 
-ConfigDialog::Setting::Setting(std::string_view label, C4GUI::Element *control) : label{std::format("{}: ", label).c_str(), 0, 0}, control{control}
+ConfigDialog::Setting::Setting(std::string_view label, C4GUI::Element *control) : label{fmt::format("{}: ", label).c_str(), 0, 0}, control{control}
 {
 	AddElement(&this->label);
 	AddElement(control);
@@ -365,7 +365,7 @@ void ConfigDialog::AddSetting(std::string_view name, T &setting) const
 {
 	if (IsBlocked(name))
 	{
-		return AddText(name, std::format("{}", setting));
+		return AddText(name, fmt::format("{}", setting));
 	}
 
 	const auto edit = new C4GUI::SpinBox<T>{C4Rect{0, 0, 0, C4GUI::Edit::GetDefaultEditHeight()}};
@@ -377,7 +377,7 @@ void ConfigDialog::AddSetting(std::string_view name, bool &setting) const
 {
 	if (IsBlocked(name))
 	{
-		return AddText(name, std::format("{}", setting));
+		return AddText(name, fmt::format("{}", setting));
 	}
 
 	const auto edit = new C4GUI::CheckBox{C4Rect{0, 0, 0, C4GUI::Edit::GetDefaultEditHeight()}, "", setting};
@@ -388,7 +388,7 @@ void ConfigDialog::AddSetting(std::string_view name, char &setting) const
 {
 	if (IsBlocked(name))
 	{
-		return AddText(name, std::format("{}", setting));
+		return AddText(name, fmt::format("{}", setting));
 	}
 
 	char text[]{setting};
@@ -470,13 +470,13 @@ T *ConfigDialog::GetSettingInternal(std::string_view name) const
 	const auto it = currentSection->settings.find(name);
 	if (it == currentSection->settings.end())
 	{
-		throw std::out_of_range{std::format("Unknown setting: [{}]/{}", currentSection->name, name)};
+		throw std::out_of_range{fmt::format("Unknown setting: [{}]/{}", currentSection->name, name)};
 	}
 
 	const auto control = dynamic_cast<T *>(it->second.GetControl());
 	if (!control)
 	{
-		throw std::out_of_range{std::format("Setting type mismatch: [{}]/{}", currentSection->name, name)};
+		throw std::out_of_range{fmt::format("Setting type mismatch: [{}]/{}", currentSection->name, name)};
 	}
 	return control;
 }

@@ -89,7 +89,7 @@ CStdEvent CStdEvent::AutoReset(const bool initialState)
 
 [[noreturn]] static void ThrowError(const char *const message)
 {
-	throw std::runtime_error{std::format("{}: {}", message, std::strerror(errno))};
+	throw std::runtime_error{fmt::format("{}: {}", message, std::strerror(errno))};
 }
 
 static void ThrowIfFailed(const bool result, const char *const message)

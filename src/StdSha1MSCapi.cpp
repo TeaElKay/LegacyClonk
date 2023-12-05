@@ -106,7 +106,7 @@ struct StdSha1::Impl
 		if (!succeeded)
 		{
 			const auto errorNumber = GetLastError();
-			throw std::runtime_error{std::format("{} (error {})", msg, errorNumber)};
+			throw std::runtime_error{fmt::format("{} (error {})", msg, errorNumber)};
 		}
 	}
 };
