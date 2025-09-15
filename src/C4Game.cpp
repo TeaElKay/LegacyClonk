@@ -56,8 +56,125 @@
 
 #include <format>
 #include <iterator>
+#include <numeric>
+#include <ranges>
 #include <sstream>
 #include <utility>
+
+C4Object *C4Game::MultipleObjectLists::Next()
+{
+	C4Object *value;
+
+	do
+	{
+		if (objectLinks.size() > 1)
+		{
+			std::ranges::stable_sort(objectLinks, [](C4ObjectLink *const link1, C4ObjectLink *const link2)
+			{
+				if (link1 == nullptr || link2 == nullptr)
+				{
+					return false;
+				}
+
+				return (link2->Obj->Category & C4D_SortLimit) < (link1->Obj->Category & C4D_SortLimit);
+			});
+		}
+
+		if (objectLinks[0])
+		{
+			if (extraLink && (extraLink->Obj->Category & C4D_SortLimit) > (objectLinks[0]->Obj->Category & C4D_SortLimit))
+			{
+				value = extraLink->Obj;
+				extraLink = extraLink->Next;
+			}
+			else
+			{
+				value = objectLinks[0]->Obj;
+				objectLinks[0] = objectLinks[0]->Next;
+			}
+		}
+		else if (extraLink)
+		{
+			value = extraLink->Obj;
+			extraLink = extraLink->Next;
+		}
+		else
+		{
+			// No more objects
+			return nullptr;
+		}
+	}
+	while (!value->Status);
+
+	return value;
+}
+
+C4Object *C4Game::MultipleObjectListsWithMarker::Next()
+{
+	C4Object *value;
+
+	do
+	{
+		if (objectLinks.size() > 1)
+		{
+			std::ranges::stable_sort(objectLinks, [](const auto &pair1, const auto &pair2)
+			{
+				C4ObjectLink *const link1{pair1.first};
+				C4ObjectLink *const link2{pair2.first};
+
+				if (link1 == nullptr || link2 == nullptr)
+				{
+					return false;
+				}
+
+				return (link2->Obj->Category & C4D_SortLimit) < (link1->Obj->Category & C4D_SortLimit);
+			});
+		}
+
+		//spdlog::warn("objectLink[0]: {}->{} (obj: {}), extraLink: {} (obj: {})", (void *) objectLinks[0].first, objectLinks[0].first ? (void *) objectLinks[0].first->Next : nullptr, objectLinks[0].first ? objectLinks[0].first->Obj->GetName() : "", (void *) extraLink, extraLink ? extraLink->Obj->GetName() : "");
+
+		if (objectLinks[0].first)
+		{
+			if (extraLink && (extraLink->Obj->Category & C4D_SortLimit) > (objectLinks[0].first->Obj->Category & C4D_SortLimit))
+			{
+				value = extraLink->Obj;
+				extraLink = extraLink->Next;
+			}
+			else
+			{
+				value = objectLinks[0].first->Obj;
+				objectLinks[0].first = objectLinks[0].first->Next;
+
+				if (!(objectLinks[0].second >> 32))
+				{
+					const auto realMarker = static_cast<std::uint32_t>(objectLinks[0].second);
+
+					if (value->Marker != realMarker)
+					{
+						value->Marker = realMarker;
+					}
+					else
+					{
+						continue;
+					}
+				}
+			}
+		}
+		else if (extraLink)
+		{
+			value = extraLink->Obj;
+			extraLink = extraLink->Next;
+		}
+		else
+		{
+			// No more objects
+			return nullptr;
+		}
+	}
+	while (!value->Status);
+
+	return value;
+}
 
 constexpr unsigned int defaultIngameGameTickDelay = 28;
 
@@ -66,7 +183,9 @@ C4Game::C4Game()
 	Teams(Parameters.Teams),
 	PlayerInfos(Parameters.PlayerInfos),
 	RestorePlayerInfos(Parameters.RestorePlayerInfos),
-	Clients(Parameters.Clients)
+	Clients(Parameters.Clients),
+	TextureMap{nullptr},
+	SectionLoadSemaphore{0}
 {
 	Default();
 }
@@ -261,10 +380,9 @@ bool C4Game::OpenScenario()
 		}
 	SetInitProgress(4);
 
-	// Compile runtime data
-	if (!CompileRuntimeData(GameText))
+	if (!LoadSections())
 	{
-		LogFatal(C4ResStrTableKey::IDS_ERR_LOAD_RUNTIMEDATA); return false;
+		return false;
 	}
 
 	// If scenario is a directory: Watch for changes
@@ -274,6 +392,87 @@ bool C4Game::OpenScenario()
 	}
 
 	PreloadStatus = PreloadLevel::Scenario;
+
+	return true;
+}
+
+bool C4Game::LoadSections()
+{
+	bool hasSectionZero{!C4S.Head.SaveGame};
+
+	if (C4S.Head.SaveGame)
+	{
+		std::array<char, _MAX_PATH + 1> filename;
+
+		ScenarioFile.ResetSearch();
+		while (ScenarioFile.FindNextEntry(C4CFN_SavedSectionFiles, filename.data()))
+		{
+			auto section = C4Section::FromSaveGame(ScenarioFile, filename.data());
+			if (!section)
+			{
+				LogFatal(C4ResStrTableKey::IDS_ERR_SECTION); return false;
+			}
+
+			if (section->Number == 0)
+			{
+				assert(!hasSectionZero);
+				hasSectionZero = true;
+			}
+
+			Sections.emplace_back(std::move(section));
+		}
+
+		// Compile runtime data|
+		if (!CompileRuntimeData(
+					GameText,
+					[hasSectionZero, this](StdCompiler &comp) -> C4Section &
+					{
+						if (hasSectionZero)
+						{
+							comp.excCorrupt("section 0 was saved separately");
+						}
+
+						auto section = std::make_unique<C4Section>(C4Section::Main, 0);
+						if (!section->InitFromTemplate(ScenarioFile) || !section->AssumeGroupAsSaveGameGroup())
+						{
+							comp.excCorrupt("Failed to open savegame group");
+						}
+
+						return *Sections.emplace_front(std::move(section));
+					}))
+		{
+			LogFatal(C4ResStrTableKey::IDS_ERR_LOAD_RUNTIMEDATA); return false;
+		}
+
+		C4Section::AdjustEnumerationIndex(std::ranges::max(Sections | std::views::transform(&C4Section::Number)) + 1);
+
+		// C4Section::InitFromSaveGameAfterLoad potentially calls C4Section::InitFromTemplate, which calls
+		// C4Group::OpenAsChild, which moves the group search pointer; therefore we can't combine it with the
+		// loop above.
+
+		for (auto &section : Sections)
+		{
+			if (!section->InitFromSaveGameAfterLoad(ScenarioFile))
+			{
+				LogFatal(C4ResStrTableKey::IDS_ERR_SECTION); return false;
+			}
+		}
+	}
+	else
+	{
+		auto section = std::make_unique<C4Section>(C4Section::Main);
+		if (!section->InitFromTemplate(ScenarioFile))
+		{
+			LogFatal(C4ResStrTableKey::IDS_ERR_SECTION); return false;
+		}
+
+		Sections.emplace_back(std::move(section));
+
+		if (!CompileRuntimeData(GameText, [this](StdCompiler &) -> C4Section & { return *Sections.front(); }))
+		{
+			LogFatal(C4ResStrTableKey::IDS_ERR_LOAD_RUNTIMEDATA); return false;
+		}
+	}
 
 	return true;
 }
@@ -373,7 +572,7 @@ bool C4Game::Init()
 			Extra.Init();
 
 			// init loader
-			if (Application.isFullScreen && !GraphicsSystem.InitLoaderScreen(C4S.Head.Loader))
+			if (Application.isFullScreen && !GraphicsSystem.InitLoaderScreen(Loader.c_str()))
 			{
 				LogFatal(C4ResStrTableKey::IDS_PRC_ERRLOADER); return false;
 			}
@@ -429,7 +628,7 @@ bool C4Game::Init()
 		Extra.Init();
 
 		// init loader
-		if (Application.isFullScreen && !GraphicsSystem.InitLoaderScreen(C4S.Head.Loader))
+		if (Application.isFullScreen && !GraphicsSystem.InitLoaderScreen(Loader.c_str()))
 		{
 			LogFatal(C4ResStrTableKey::IDS_PRC_ERRLOADER); return false;
 		}
@@ -453,7 +652,7 @@ bool C4Game::Init()
 	Application.LogSystem.EnableDebugLog(DebugMode);
 
 	// Init game
-	if (!InitGame(ScenarioFile, nullptr, true)) return false;
+	if (!InitGame(ScenarioFile, true)) return false;
 
 	// Network final init
 	if (Network.isEnabled())
@@ -536,11 +735,21 @@ bool C4Game::Init()
 	// and redraw background
 	GraphicsSystem.InvalidateBg();
 
+	// start section load thread
+	SectionLoadThread = C4Thread::CreateJ({"SectionLoadThread"}, &C4Game::SectionLoadProc, this);
+
 	return true;
 }
 
 void C4Game::Clear()
 {
+	SectionLoadThread.request_stop();
+	SectionLoadSemaphore.release();
+	if (SectionLoadThread.joinable())
+	{
+		SectionLoadThread.join();
+	}
+
 	// join the thread first as it will mess with the cleared state otherwise
 	if (PreloadThread.joinable())
 	{
@@ -587,14 +796,15 @@ void C4Game::Clear()
 	// Clear the logger now that C4GameRes has also destroyed all C4Network2Res objects
 	Network.ResList.ClearLogger();
 	RoundResults.Clear();
+	ObjectsInAllSections.Clear();
+	// Ensure the main section is destroyed last
+	SectionsPendingDeletion.clear();
+	Sections.resize(1);
+	Sections.clear();
+	SectionsRecentlyDeleted = 0;
 	C4S.Clear();
-	Weather.Clear();
 	GraphicsSystem.Clear();
-	DeleteObjects(true);
 	Defs.Clear();
-	Landscape.Clear();
-	PXS.Clear();
-	delete pGlobalEffects; pGlobalEffects = nullptr;
 	Particles.Clear();
 	Material.Clear();
 	TextureMap.Clear(); // texture map *MUST* be cleared after the materials, because of the patterns!
@@ -609,8 +819,6 @@ void C4Game::Clear()
 	RecordDumpFile.Clear();
 	RecordStream.Clear();
 
-	PathFinder.Clear();
-	TransferZones.Clear();
 #ifndef USE_CONSOLE
 	FontLoader.Clear();
 #endif
@@ -672,6 +880,8 @@ bool C4Game::GameOverCheck()
 	int32_t count, mat;
 	bool condition_valid, condition_true;
 	bool game_over_valid = false, game_over = true;
+
+#if 0
 	// CreateObjects
 	condition_valid = false;
 	condition_true = true;
@@ -701,7 +911,7 @@ bool C4Game::GameOverCheck()
 		condition_valid = true;
 		// Count objects, if category living, live only
 		C4ObjectLink *cLnk;
-		C4Def *cdef = C4Id2Def(c_id);
+		C4Def *cdef = Game.Defs.ID2Def(c_id);
 		bool alive_only = false;
 		if (cdef && (cdef->Category & C4D_Living)) alive_only = true;
 		int32_t iCount = 0;
@@ -731,6 +941,7 @@ bool C4Game::GameOverCheck()
 	{
 		game_over_valid = true; if (!condition_true) game_over = false;
 	}
+#endif
 
 	// Evaluate game over
 	if (game_over_valid)
@@ -787,8 +998,12 @@ bool C4Game::Execute() // Returns true if the game is over
 	// Halt
 	if (HaltCount) return false;
 
+	CheckLoadedSections();
+
+	SectionRemovalCheck();
+
 #ifdef DEBUGREC
-	Landscape.DoRelights();
+	std::ranges::for_each(GetActiveSections(), &C4Landscape::DoRelights, &C4Section::Landscape);
 #endif
 
 	// Execute the control
@@ -805,14 +1020,9 @@ bool C4Game::Execute() // Returns true if the game is over
 
 	// Game
 
-	EXEC_S(ExecObjects();, ExecObjectsStat)
-	if (pGlobalEffects)
-		EXEC_S_DR(pGlobalEffects->Execute(nullptr);, GEStats, "GEEx\0");
-	EXEC_S_DR(PXS.Execute();,                      PXSStat,         "PXSEx")
-	EXEC_S_DR(Particles.GlobalParticles.Exec();,   PartStat,        "ParEx")
-	EXEC_S_DR(MassMover.Execute();,                MassMoverStat,   "MMvEx")
-	EXEC_S_DR(Weather.Execute();,                  WeatherStat,     "WtrEx")
-	EXEC_S_DR(Landscape.Execute();,                LandscapeStat,   "LdsEx")
+	std::ranges::for_each(GetActiveSections(), &C4Section::ExecObjects);
+	std::ranges::for_each(GetActiveSections(), &C4Section::Execute);
+
 	EXEC_S_DR(Players.Execute();,                  PlayersStat,     "PlrEx")
 	// FIXME: C4Application::Execute should do this, but what about the stats?
 	EXEC_S_DR(Application.MusicSystem->Execute();, MusicSystemStat, "Music")
@@ -843,7 +1053,7 @@ bool C4Game::Execute() // Returns true if the game is over
 #ifdef DEBUGREC
 	AddDbgRec(RCT_Block, "eGame", 6);
 
-	Landscape.DoRelights();
+	std::ranges::for_each(GetActiveSections(), &C4Landscape::DoRelights, &C4Section::Landscape);
 #endif
 
 	return true;
@@ -875,14 +1085,89 @@ void C4Game::InitFullscreenComponents(bool fRunning)
 	}
 }
 
-bool C4Game::InitMaterialTexture()
+void C4Game::ClearPointers(C4Object *pObj)
+{
+	for (const auto &section : GetNotDeletedSections())
+	{
+		section->ClearPointers(pObj);
+	}
+
+	// Don't call ClearPointers() as we don't need to call C4Object::ClearPointers on the list members -
+	// objects in this list are _always_ contained in section lists
+	while (ObjectsInAllSections.Remove(pObj))
+	{
+	}
+
+	Application.SoundSystem->ClearPointers(pObj);
+
+	Messages.ClearPointers(pObj);
+	Players.ClearPointers(pObj);
+	GraphicsSystem.ClearPointers(pObj);
+	MessageInput.ClearPointers(pObj);
+	Console.ClearPointers(pObj);
+	MouseControl.ClearPointers(pObj);
+}
+
+void C4Game::ClearSectionPointers(C4Section &section)
+{
+	for (const auto &otherSection : GetNotDeletedSections())
+	{
+		otherSection->ClearSectionPointers(section);
+	}
+
+	if (Application.SoundSystem)
+	{
+		Application.SoundSystem->ClearSectionPointers(section);
+	}
+
+	GraphicsSystem.ClearSectionPointers(section);
+	Console.ClearSectionPointers(section);
+}
+
+void C4Game::UpdateScriptPointers()
+{
+	for (const auto &section : GetNotDeletedSections())
+	{
+		section->Objects.UpdateScriptPointers(*section);
+	}
+
+	UpdateMaterialScriptPointers();
+}
+
+void C4Game::UpdateMaterialScriptPointers()
+{
+	std::ranges::for_each(GetNotDeletedSections(), &C4MaterialMap::UpdateScriptPointers, &C4Section::Material);
+}
+
+C4Object *C4Game::ObjectPointer(const std::int32_t number)
+{
+	return FindFirstInAllObjects([number](C4ObjectList &objects) { return objects.ObjectPointer(number); });
+}
+
+C4Object *C4Game::SafeObjectPointer(const std::int32_t number)
+{
+	return FindFirstInAllObjects([number](C4ObjectList &objects) { return objects.SafeObjectPointer(number); });
+}
+
+std::int32_t C4Game::ObjectNumber(C4Object *const obj)
+{
+	return FindFirstInAllObjects([obj](C4ObjectList &objects) { return objects.ObjectNumber(obj); });
+}
+
+bool C4Game::LoadMaterialsAndTextures(C4MaterialMap &materialMap, C4TextureMap &textureMap, C4Group *const sectionGroup, C4Group *const sectionSavegameGroup)
 {
 	// Clear old data
-	TextureMap.Clear();
-	Material.Clear();
+	textureMap.Clear();
+	materialMap.Clear();
 
 	// Check for scenario local materials
-	bool fHaveScenMaterials = ScenarioFile.FindEntry(C4CFN_Material);
+	const bool isMainSection{!sectionGroup};
+	bool haveSectionMaterials{sectionGroup && sectionGroup->FindEntry(C4CFN_Material)};
+
+	bool haveSectionSavegameMaterials{sectionSavegameGroup && sectionSavegameGroup->FindEntry(C4CFN_Material)};
+	bool haveScenarioFileMaterials{isMainSection && ScenarioFile.FindEntry(C4CFN_Material)};
+	bool skipNextTexMap{false};
+	bool onlyLoadTexMap{false};
 
 	// Load all materials
 	auto matRes = Parameters.GameRes.iterRes(NRT_Material);
@@ -892,20 +1177,43 @@ bool C4Game::InitMaterialTexture()
 	{
 		// Are there any scenario local materials that need to be looked at firs?
 		C4Group Mats;
-		if (fHaveScenMaterials)
+		if (haveSectionSavegameMaterials)
+		{
+			if (!Mats.OpenAsChild(sectionSavegameGroup, C4CFN_Material))
+			{
+				LogFatal(C4ResStrTableKey::IDS_ERR_SCENARIOMATERIALS, Mats.GetError());
+				return false;
+			}
+
+			// Once only
+			haveSectionSavegameMaterials = false;
+			skipNextTexMap = !isMainSection;
+			onlyLoadTexMap = !isMainSection;
+		}
+		else if (haveSectionMaterials)
+		{
+			if (!Mats.OpenAsChild(sectionGroup, C4CFN_Material))
+			{
+				LogFatal(C4ResStrTableKey::IDS_ERR_SCENARIOMATERIALS, Mats.GetError());
+				return false;
+			}
+			// Once only
+			haveSectionMaterials = false;
+		}
+		else if (haveScenarioFileMaterials)
 		{
 			if (!Mats.OpenAsChild(&ScenarioFile, C4CFN_Material))
 			{
 				LogFatal(C4ResStrTableKey::IDS_ERR_SCENARIOMATERIALS, Mats.GetError());
 				return false;
 			}
-			// Once only
-			fHaveScenMaterials = false;
+
+			haveScenarioFileMaterials = false;
 		}
 		else
 		{
 			if (matRes == matRes.end()) break;
-			// Find next external material source
+			// Find next external materialMap source
 			if (!Mats.Open(matRes->getFile()))
 			{
 				LogFatal(C4ResStrTableKey::IDS_ERR_EXTERNALMATERIALS, matRes->getFile(), Mats.GetError());
@@ -914,14 +1222,21 @@ bool C4Game::InitMaterialTexture()
 			++matRes;
 		}
 
-		// First material file? Load texture map.
+		// First materialMap file? Load texture map.
 		bool fNewOverloadMaterials = false, fNewOverloadTextures = false;
 		if (fFirst)
 		{
-			long tme_count = TextureMap.LoadMap(Mats, C4CFN_TexMap, &fNewOverloadMaterials, &fNewOverloadTextures);
+			long tme_count = textureMap.LoadMap(Mats, C4CFN_TexMap, &fNewOverloadMaterials, &fNewOverloadTextures);
 			Log(C4ResStrTableKey::IDS_PRC_TEXMAPENTRIES, tme_count);
 			// Only once
 			fFirst = false;
+		}
+		else if (skipNextTexMap)
+		{
+			// Skip texture map
+			skipNextTexMap = false;
+			fNewOverloadMaterials = fOverloadMaterials;
+			fNewOverloadTextures = fOverloadTextures;
 		}
 		else
 		{
@@ -930,27 +1245,34 @@ bool C4Game::InitMaterialTexture()
 				fOverloadMaterials = fOverloadTextures = false;
 		}
 
-		// Load textures
-		if (fOverloadTextures)
+		if (onlyLoadTexMap)
 		{
-			int iTexs = TextureMap.LoadTextures(Mats);
-			// Automatically continue search if no texture was found
-			if (!iTexs) fNewOverloadTextures = true;
-			tex_count += iTexs;
+			onlyLoadTexMap = false;
 		}
-
-		// Load materials
-		if (fOverloadMaterials)
+		else
 		{
-			int iMats = Material.Load(Mats);
-			// Automatically continue search if no material was found
-			if (!iMats) fNewOverloadMaterials = true;
-			mat_count += iMats;
-		}
+			// Load textures
+			if (fOverloadTextures)
+			{
+				int iTexs = textureMap.LoadTextures(Mats);
+				// Automatically continue search if no texture was found
+				if (!iTexs) fNewOverloadTextures = true;
+				tex_count += iTexs;
+			}
 
-		// Set flags
-		fOverloadTextures = fNewOverloadTextures;
-		fOverloadMaterials = fNewOverloadMaterials;
+			// Load materials
+			if (fOverloadMaterials)
+			{
+				int iMats = materialMap.Load(Mats);
+				// Automatically continue search if no materialMap was found
+				if (!iMats) fNewOverloadMaterials = true;
+				mat_count += iMats;
+			}
+
+			// Set flags
+			fOverloadTextures = fNewOverloadTextures;
+			fOverloadMaterials = fNewOverloadMaterials;
+		}
 	}
 
 	// Logs
@@ -958,54 +1280,78 @@ bool C4Game::InitMaterialTexture()
 	Log(C4ResStrTableKey::IDS_PRC_MATERIALS, mat_count);
 
 	// Load material enumeration
-	if (!Material.LoadEnumeration(ScenarioFile))
+	if (sectionSavegameGroup && !materialMap.LoadEnumeration(*sectionSavegameGroup))
 	{
 		LogFatal(C4ResStrTableKey::IDS_PRC_NOMATENUM); return false;
 	}
 
-	// Initialize texture map
-	TextureMap.Init();
-
-	// Cross map mats (after texture init, because Material-Texture-combinations are used)
-	Material.CrossMapMaterials();
-
-	// Enumerate materials
-	if (!EnumerateMaterials()) return false;
-
-	// get material script funcs
-	Material.UpdateScriptPointers();
+	// Check materialMap number
+	if (materialMap.Num > C4MaxMaterial)
+	{
+		LogFatal(C4ResStrTableKey::IDS_PRC_TOOMANYMATS); return false;
+	}
 
 	return true;
 }
 
-void C4Game::ClearObjectPtrs(C4Object *pObj)
+C4Section *C4Game::GetSectionByNumber(const uint32_t number)
 {
-	// May not call Objects.ClearPointers() because that would
-	// remove pObj from primary list and pObj is to be kept
-	// until CheckObjectRemoval().
-	C4Object *cObj; C4ObjectLink *clnk;
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		cObj->ClearPointers(pObj);
-	// check in inactive objects as well
-	for (clnk = Objects.InactiveObjects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		cObj->ClearPointers(pObj);
-	Application.SoundSystem->ClearPointers(pObj);
+	if (const auto it = GetSectionIteratorByNumber(number); it != Sections.end())
+	{
+		return it->get();
+	}
+
+	return nullptr;
 }
 
-void C4Game::ClearPointers(C4Object *pObj)
+C4Section *C4Game::GetSectionByNumberCheckNotLast(const std::uint32_t number)
 {
-	BackObjects.ClearPointers(pObj);
-	ForeObjects.ClearPointers(pObj);
-	Messages.ClearPointers(pObj);
-	ClearObjectPtrs(pObj);
-	Players.ClearPointers(pObj);
-	GraphicsSystem.ClearPointers(pObj);
-	MessageInput.ClearPointers(pObj);
-	Console.ClearPointers(pObj);
-	MouseControl.ClearPointers(pObj);
-	TransferZones.ClearPointers(pObj);
-	if (pGlobalEffects)
-		pGlobalEffects->ClearPointers(pObj);
+	if (const auto [it, hasOther] = GetSectionIteratorByNumberCheckNotLast(number); hasOther && it != Sections.end())
+	{
+		return it->get();
+	}
+
+	return nullptr;
+}
+
+std::pair<std::list<std::unique_ptr<C4Section>>::iterator, bool> C4Game::GetSectionIteratorByNumberCheckNotLast(const std::uint32_t number)
+{
+	bool hasOtherActiveSection{false};
+	auto it = Sections.begin();
+
+	for (; it != Sections.end(); ++it)
+	{
+		if ((*it)->IsActive())
+		{
+			if ((*it)->Number == number)
+			{
+				if (!hasOtherActiveSection)
+				{
+					hasOtherActiveSection = std::ranges::any_of(std::next(it), Sections.end(), &C4Section::IsActive);
+				}
+
+				break;
+			}
+			else
+			{
+				hasOtherActiveSection = true;
+			}
+		}
+	}
+
+	return {std::move(it), hasOtherActiveSection};
+}
+
+bool C4Game::RemoveSection(uint32_t number)
+{
+	if (const auto [it, hasOther] = GetSectionIteratorByNumberCheckNotLast(number); hasOther && it != Sections.end() && (*it)->AssignRemoval())
+	{
+		++SectionsRecentlyDeleted;
+
+		return true;
+	}
+
+	return false;
 }
 
 bool C4Game::TogglePause()
@@ -1076,530 +1422,6 @@ bool C4Game::IsPaused()
 	return !!HaltCount;
 }
 
-C4Object *C4Game::NewObject(C4Def *pDef, C4Object *pCreator,
-	int32_t iOwner, C4ObjectInfo *pInfo,
-	int32_t iX, int32_t iY, int32_t iR,
-	C4Fixed xdir, C4Fixed ydir, C4Fixed rdir,
-	int32_t iCon, int32_t iController)
-{
-	// Safety
-	if (!pDef) return nullptr;
-#ifdef DEBUGREC
-	C4RCCreateObj rc;
-	rc.id = pDef->id;
-	rc.oei = ObjectEnumerationIndex + 1;
-	rc.x = iX; rc.y = iY; rc.ownr = iOwner;
-	AddDbgRec(RCT_CrObj, &rc, sizeof(rc));
-#endif
-	// Create object
-	auto obj = std::make_unique<C4Object>();
-	C4Object *const objPtr{obj.get()};
-
-	// Initialize object
-	obj->Init(pDef, pCreator, iOwner, pInfo, iX, iY, iR, xdir, ydir, rdir, iController);
-	// Enumerate object
-	obj->Number = ++ObjectEnumerationIndex;
-	// Add to object list
-	if (Objects.Add(obj.get()))
-	{
-		obj.release();
-	}
-	else
-	{
-		return nullptr;
-	}
-
-	// From now on, object is ready to be used in scripts!
-	// Construction callback
-	C4AulParSet pars(C4VObj(pCreator));
-	objPtr->Call(PSF_Construction, pars);
-	// AssignRemoval called? (Con 0)
-	if (!objPtr->Status) { return nullptr; }
-	// Do initial con
-	objPtr->DoCon(iCon, true);
-	// AssignRemoval called? (Con 0)
-	if (!objPtr->Status) { return nullptr; }
-	// Success
-	return objPtr;
-}
-
-void C4Game::DeleteObjects(bool fDeleteInactive)
-{
-	// del any objects
-	Objects.DeleteObjects();
-	BackObjects.Clear();
-	ForeObjects.Clear();
-	if (fDeleteInactive) Objects.InactiveObjects.DeleteObjects();
-	// reset resort flag
-	fResortAnyObject = false;
-}
-
-C4Object *C4Game::CreateObject(C4ID id, C4Object *pCreator, int32_t iOwner,
-	int32_t x, int32_t y, int32_t r,
-	C4Fixed xdir, C4Fixed ydir, C4Fixed rdir, int32_t iController)
-{
-	C4Def *pDef;
-	// Get pDef
-	if (!(pDef = C4Id2Def(id))) return nullptr;
-	// Create object
-	return NewObject(pDef, pCreator,
-		iOwner, nullptr,
-		x, y, r,
-		xdir, ydir, rdir,
-		FullCon, iController);
-}
-
-C4Object *C4Game::CreateInfoObject(C4ObjectInfo *cinf, int32_t iOwner,
-	int32_t tx, int32_t ty)
-{
-	C4Def *def;
-	// Valid check
-	if (!cinf) return nullptr;
-	// Get def
-	if (!(def = C4Id2Def(cinf->id))) return nullptr;
-	// Create object
-	return NewObject(def, nullptr,
-		iOwner, cinf,
-		tx, ty, 0,
-		Fix0, Fix0, Fix0,
-		FullCon, NO_OWNER);
-}
-
-C4Object *C4Game::CreateObjectConstruction(C4ID id,
-	C4Object *pCreator,
-	int32_t iOwner,
-	int32_t iX, int32_t iBY,
-	int32_t iCon,
-	bool fTerrain)
-{
-	C4Def *pDef;
-	C4Object *pObj;
-
-	// Get def
-	if (!(pDef = C4Id2Def(id))) return nullptr;
-
-	int32_t dx, dy, dwdt, dhgt;
-	dwdt = pDef->Shape.Wdt; dhgt = pDef->Shape.Hgt;
-	dx = iX - dwdt / 2; dy = iBY - dhgt;
-
-	// Terrain & Basement
-	if (fTerrain)
-	{
-		// Clear site background (ignored for ultra-large structures)
-		if (dwdt * dhgt < 12000)
-			Landscape.DigFreeRect(dx, dy, dwdt, dhgt);
-		// Raise Terrain
-		Landscape.RaiseTerrain(dx, dy + dhgt, dwdt);
-		// Basement
-		if (pDef->Basement)
-		{
-			const int32_t BasementStrength = 8;
-			// Border basement
-			if (pDef->Basement > 1)
-			{
-				Landscape.DrawMaterialRect(MGranite, dx, dy + dhgt, std::min<int32_t>(pDef->Basement, dwdt), BasementStrength);
-				Landscape.DrawMaterialRect(MGranite, dx + dwdt - std::min<int32_t>(pDef->Basement, dwdt), dy + dhgt, std::min<int32_t>(pDef->Basement, dwdt), BasementStrength);
-			}
-			// Normal basement
-			else
-				Landscape.DrawMaterialRect(MGranite, dx, dy + dhgt, dwdt, BasementStrength);
-		}
-	}
-
-	// Create object
-	if (!(pObj = NewObject(pDef,
-		pCreator,
-		iOwner, nullptr,
-		iX, iBY, 0,
-		Fix0, Fix0, Fix0,
-		iCon, pCreator ? pCreator->Controller : NO_OWNER))) return nullptr;
-
-	return pObj;
-}
-
-void C4Game::BlastObjects(int32_t tx, int32_t ty, int32_t level, C4Object *inobj, int32_t iCausedBy, C4Object *pByObj)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-
-	// layer check: Blast in same layer only
-	if (pByObj) pByObj = pByObj->pLayer;
-
-	// Contained blast
-	if (inobj)
-	{
-		inobj->Blast(level, iCausedBy);
-		for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-			if (cObj->Status) if (cObj->Contained == inobj) if (cObj->pLayer == pByObj)
-				cObj->Blast(level, iCausedBy);
-	}
-
-	// Uncontained blast local outside objects
-	else
-	{
-		for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-			if (cObj->Status) if (!cObj->Contained) if (cObj->pLayer == pByObj)
-			{
-				// Direct hit (5 pixel range to all sides)
-				if (Inside<int32_t>(ty - (cObj->y + cObj->Shape.y), -5, cObj->Shape.Hgt - 1 + 10))
-					if (Inside<int32_t>(tx - (cObj->x + cObj->Shape.x), -5, cObj->Shape.Wdt - 1 + 10))
-						cObj->Blast(level, iCausedBy);
-				// Shock wave hit (if in level range, living, object and vehicle only. No structures/StatickBack, as this would mess up castles, elevators, etc.!)
-				if (cObj->Category & (C4D_Living | C4D_Object | C4D_Vehicle))
-					if (!cObj->Def->NoHorizontalMove)
-						if (Abs(ty - cObj->y) <= level)
-							if (Abs(tx - cObj->x) <= level)
-							{
-								// vehicles and floating objects only if grab+pushable (no throne, no tower entrances...)
-								if (cObj->Def->Grab != 1)
-								{
-									if (cObj->Category & C4D_Vehicle)
-										continue;
-									if (cObj->Action.Act >= 0)
-										if (cObj->Def->ActMap[cObj->Action.Act].Procedure == DFA_FLOAT)
-											continue;
-								}
-								if (cObj->Category & C4D_Living)
-								{
-									// living takes additional dmg from blasts
-									cObj->DoEnergy(-level / 2, false, C4FxCall_EngBlast, iCausedBy);
-									cObj->DoDamage(level / 2, iCausedBy, C4FxCall_DmgBlast);
-								}
-
-								// force argument evaluation order
-								const auto p2 = itofix(-level + Abs(ty - cObj->y)) / BoundBy<int32_t>(cObj->Mass / 10, 4, (cObj->Category & C4D_Living) ? 8 : 20);
-								const auto p1 = itofix(Sign(cObj->x - tx + Rnd3()) * (level - Abs(tx - cObj->x))) / BoundBy<int32_t>(cObj->Mass / 10, 4, (cObj->Category & C4D_Living) ? 8 : 20);
-								cObj->Fling(p1, p2, true, iCausedBy);
-							}
-			}
-	}
-}
-
-void C4Game::ShakeObjects(int32_t tx, int32_t ty, int32_t range, int32_t iCausedBy)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		if (cObj->Status) if (!cObj->Contained)
-			if (cObj->Category & C4D_Living)
-				if (Abs(ty - cObj->y) <= range)
-					if (Abs(tx - cObj->x) <= range)
-						if (!Random(3))
-							if (cObj->Action.t_attach)
-								if (!MatVehicle(cObj->Shape.AttachMat))
-								{
-									cObj->Fling(itofix(Rnd3()), Fix0, false, iCausedBy);
-								}
-}
-
-C4Object *C4Game::OverlapObject(int32_t tx, int32_t ty, int32_t wdt, int32_t hgt, int32_t category)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-	C4Rect rect1, rect2;
-	rect1.x = tx; rect1.y = ty; rect1.Wdt = wdt; rect1.Hgt = hgt;
-	C4LArea Area(&Objects.Sectors, tx, ty, wdt, hgt); C4LSector *pSector;
-	for (C4ObjectList *pObjs = Area.FirstObjectShapes(&pSector); pSector; pObjs = Area.NextObjectShapes(pObjs, &pSector))
-		for (clnk = pObjs->First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-			if (cObj->Status) if (!cObj->Contained)
-				if (cObj->Category & category & C4D_SortLimit)
-				{
-					rect2 = cObj->Shape; rect2.x += cObj->x; rect2.y += cObj->y;
-					if (rect1.Overlap(rect2)) return cObj;
-				}
-	return nullptr;
-}
-
-C4Object *C4Game::FindObject(C4ID id,
-	int32_t iX, int32_t iY, int32_t iWdt, int32_t iHgt,
-	uint32_t ocf,
-	const char *szAction, C4Object *pActionTarget,
-	C4Object *pExclude,
-	C4Object *pContainer,
-	int32_t iOwner,
-	C4Object *pFindNext)
-{
-	C4Object *pClosest = nullptr;
-	int32_t iClosest = 0, iDistance, iFartherThan = -1;
-	C4Object *cObj;
-	C4ObjectLink *cLnk;
-	C4Def *pDef;
-	C4Object *pFindNextCpy = pFindNext;
-
-	// check the easy cases first
-	if (id != C4ID_None)
-	{
-		if (!(pDef = C4Id2Def(id))) return nullptr; // no valid def
-		if (!pDef->Count) return nullptr; // no instances at all
-	}
-
-	// Finding next closest: find closest but further away than last closest
-	if (pFindNext && (iWdt == -1) && (iHgt == -1))
-	{
-		iFartherThan = (pFindNext->x - iX) * (pFindNext->x - iX) + (pFindNext->y - iY) * (pFindNext->y - iY);
-		pFindNext = nullptr;
-	}
-
-	bool bFindActIdle = SEqual(szAction, "Idle") || SEqual(szAction, "ActIdle");
-
-	// Scan all objects
-	for (cLnk = Objects.First; cLnk && (cObj = cLnk->Obj); cLnk = cLnk->Next)
-	{
-		// Not skipping to find next
-		if (!pFindNext)
-			// Status
-			if (cObj->Status)
-				// ID
-				if ((id == C4ID_None) || (cObj->Def->id == id))
-					// OCF (match any specified)
-					if (cObj->OCF & ocf)
-						// Exclude
-						if (cObj != pExclude)
-							// Action
-							if (!szAction || !szAction[0] || (bFindActIdle && cObj->Action.Act <= ActIdle) || ((cObj->Action.Act > ActIdle) && SEqual(szAction, cObj->Def->ActMap[cObj->Action.Act].Name)))
-								// ActionTarget
-								if (!pActionTarget || ((cObj->Action.Act > ActIdle) && ((cObj->Action.Target == pActionTarget) || (cObj->Action.Target2 == pActionTarget))))
-									// Container
-									if (!pContainer || (cObj->Contained == pContainer) || ((reinterpret_cast<std::intptr_t>(pContainer) == NO_CONTAINER) && !cObj->Contained) || ((reinterpret_cast<std::intptr_t>(pContainer) == ANY_CONTAINER) && cObj->Contained))
-										// Owner
-										if ((iOwner == ANY_OWNER) || (cObj->Owner == iOwner))
-											// Area
-										{
-											// Full range
-											if ((iX == 0) && (iY == 0) && (iWdt == 0) && (iHgt == 0))
-												return cObj;
-											// Point
-											if ((iWdt == 0) && (iHgt == 0))
-											{
-												if (Inside<int32_t>(iX - (cObj->x + cObj->Shape.x), 0, cObj->Shape.Wdt - 1))
-													if (Inside<int32_t>(iY - (cObj->y + cObj->Shape.y), 0, cObj->Shape.Hgt - 1))
-														return cObj;
-												continue;
-											}
-											// Closest
-											if ((iWdt == -1) && (iHgt == -1))
-											{
-												iDistance = (cObj->x - iX) * (cObj->x - iX) + (cObj->y - iY) * (cObj->y - iY);
-												// same distance?
-												if ((iDistance == iFartherThan) && !pFindNextCpy)
-													return cObj;
-												// nearer than/first closest?
-												if (!pClosest || (iDistance < iClosest))
-													if (iDistance > iFartherThan)
-													{
-														pClosest = cObj; iClosest = iDistance;
-													}
-											}
-											// Range
-											else if (Inside<int32_t>(cObj->x - iX, 0, iWdt - 1) && Inside<int32_t>(cObj->y - iY, 0, iHgt - 1))
-												return cObj;
-										}
-
-		// Find next mark reached
-		if (cObj == pFindNextCpy) pFindNext = pFindNextCpy = nullptr;
-	}
-
-	return pClosest;
-}
-
-C4Object *C4Game::FindVisObject(int32_t tx, int32_t ty, int32_t iPlr, const C4Facet &fctViewport,
-	int32_t iX, int32_t iY, int32_t iWdt, int32_t iHgt,
-	uint32_t ocf,
-	C4Object *pExclude,
-	int32_t iOwner,
-	C4Object *pFindNext)
-{
-	// FIXME: Use C4FindObject here for optimization
-	C4Object *cObj; C4ObjectLink *cLnk; C4ObjectList *pLst = &ForeObjects;
-
-	// scan all object lists separately
-	while (pLst)
-	{
-		// Scan all objects in list
-		for (cLnk = Objects.First; cLnk && (cObj = cLnk->Obj); cLnk = cLnk->Next)
-		{
-			// Not skipping to find next
-			if (!pFindNext)
-				// Status
-				if (cObj->Status == C4OS_NORMAL)
-					// exclude fore/back-objects from main list
-					if ((pLst != &Objects) || (!(cObj->Category & C4D_BackgroundOrForeground)))
-						// exclude MouseIgnore-objects
-						if (~cObj->Category & C4D_MouseIgnore)
-							// OCF (match any specified)
-							if (cObj->OCF & ocf)
-								// Exclude
-								if (cObj != pExclude)
-									// Container
-									if (!cObj->Contained)
-										// Owner
-										if ((iOwner == ANY_OWNER) || (cObj->Owner == iOwner))
-											// Visibility
-											if (!cObj->Visibility || cObj->IsVisible(iPlr, false))
-												// Area
-											{
-												// Layer check: Layered objects are invisible to players whose cursor is in another layer
-												if (ValidPlr(iPlr))
-												{
-													C4Object *pCursor = Players.Get(iPlr)->Cursor;
-													if (!pCursor || (pCursor->pLayer != cObj->pLayer)) continue;
-												}
-												// Full range
-												if ((iX == 0) && (iY == 0) && (iWdt == 0) && (iHgt == 0))
-													return cObj;
-												// get object position
-												int32_t iObjX, iObjY; cObj->GetViewPos(iObjX, iObjY, tx, ty, fctViewport);
-												// Point search
-												if ((iWdt == 0) && (iHgt == 0))
-												{
-													if (Inside<int32_t>(iX - (iObjX + cObj->Shape.x), 0, cObj->Shape.Wdt - 1))
-														if (Inside<int32_t>(iY - (iObjY + cObj->Shape.y - cObj->addtop()), 0, cObj->Shape.Hgt + cObj->addtop() - 1))
-															return cObj;
-													continue;
-												}
-												// Range
-												if (Inside<int32_t>(iObjX - iX, 0, iWdt - 1) && Inside<int32_t>(iObjY - iY, 0, iHgt - 1))
-												{
-													return cObj;
-												}
-											}
-
-			// Find next mark reached
-			if (cObj == pFindNext) pFindNext = nullptr;
-		}
-		// next list
-		if (pLst == &ForeObjects) pLst = &Objects;
-		else if (pLst == &Objects) pLst = &BackObjects;
-		else pLst = nullptr;
-	}
-
-	// none found
-	return nullptr;
-}
-
-int32_t C4Game::ObjectCount(C4ID id,
-	int32_t x, int32_t y, int32_t wdt, int32_t hgt,
-	uint32_t ocf,
-	const char *szAction, C4Object *pActionTarget,
-	C4Object *pExclude,
-	C4Object *pContainer,
-	int32_t iOwner)
-{
-	int32_t iResult = 0; C4Def *pDef;
-	// check the easy cases first
-	if (id != C4ID_None)
-	{
-		if (!(pDef = C4Id2Def(id))) return 0; // no valid def
-		if (!pDef->Count) return 0; // no instances at all
-		if (!x && !y && !wdt && !hgt && ocf == OCF_All && !szAction && !pActionTarget && !pExclude && !pContainer && (iOwner == ANY_OWNER))
-			// plain id-search: return known count
-			return pDef->Count;
-	}
-	C4Object *cObj; C4ObjectLink *clnk;
-	bool bFindActIdle = SEqual(szAction, "Idle") || SEqual(szAction, "ActIdle");
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		// Status
-		if (cObj->Status)
-			// ID
-			if ((id == C4ID_None) || (cObj->Def->id == id))
-				// OCF
-				if (cObj->OCF & ocf)
-					// Exclude
-					if (cObj != pExclude)
-						// Action
-						if (!szAction || !szAction[0] || (bFindActIdle && cObj->Action.Act <= ActIdle) || ((cObj->Action.Act > ActIdle) && SEqual(szAction, cObj->Def->ActMap[cObj->Action.Act].Name)))
-							// ActionTarget
-							if (!pActionTarget || ((cObj->Action.Act > ActIdle) && ((cObj->Action.Target == pActionTarget) || (cObj->Action.Target2 == pActionTarget))))
-								// Container
-								if (!pContainer || (cObj->Contained == pContainer) || ((reinterpret_cast<std::intptr_t>(pContainer) == NO_CONTAINER) && !cObj->Contained) || ((reinterpret_cast<std::intptr_t>(pContainer) == ANY_CONTAINER) && cObj->Contained))
-									// Owner
-									if ((iOwner == ANY_OWNER) || (cObj->Owner == iOwner))
-										// Area
-									{
-										// Full range
-										if ((x == 0) && (y == 0) && (wdt == 0) && (hgt == 0))
-										{
-											iResult++; continue;
-										}
-										// Point
-										if ((wdt == 0) && (hgt == 0))
-										{
-											if (Inside<int32_t>(x - (cObj->x + cObj->Shape.x), 0, cObj->Shape.Wdt - 1))
-												if (Inside<int32_t>(y - (cObj->y + cObj->Shape.y), 0, cObj->Shape.Hgt - 1))
-												{
-													iResult++; continue;
-												}
-											continue;
-										}
-										// Range
-										if (Inside<int32_t>(cObj->x - x, 0, wdt - 1) && Inside<int32_t>(cObj->y - y, 0, hgt - 1))
-										{
-											iResult++; continue;
-										}
-									}
-
-	return iResult;
-}
-
-// Deletes removal-assigned data from list.
-// Pointer clearance is done by AssignRemoval.
-
-void C4Game::ObjectRemovalCheck() // Every Tick255 by ExecObjects
-{
-	C4Object *cObj; C4ObjectLink *clnk, *next;
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = next)
-	{
-		next = clnk->Next;
-		if (!cObj->Status && (cObj->RemovalDelay == 0))
-		{
-			Objects.Remove(cObj);
-			delete cObj;
-		}
-	}
-}
-
-void C4Game::ExecObjects() // Every Tick1 by Execute
-{
-#ifdef DEBUGREC
-	AddDbgRec(RCT_Block, "ObjEx", 6);
-#endif
-
-	// Execute objects - reverse order to ensure
-	for (auto it = Objects.BeginLast(); it != std::default_sentinel; ++it)
-	{
-		if ((*it)->Status)
-			// Execute object
-			(*it)->Execute();
-		else
-			// Status reset: process removal delay
-			if ((*it)->RemovalDelay > 0) (*it)->RemovalDelay--;
-	}
-
-#ifdef DEBUGREC
-	AddDbgRec(RCT_Block, "ObjCC", 6);
-#endif
-
-	// Cross check objects
-	Objects.CrossCheck();
-
-#ifdef DEBUGREC
-	AddDbgRec(RCT_Block, "ObjRs", 6);
-#endif
-
-	// Resort
-	if (fResortAnyObject)
-	{
-		fResortAnyObject = false;
-		Objects.ResortUnsorted();
-	}
-	if (Objects.ResortProc) Objects.ExecuteResorts();
-
-#ifdef DEBUGREC
-	AddDbgRec(RCT_Block, "ObjRm", 6);
-#endif
-
-	// Removal
-	if (!Tick255) ObjectRemovalCheck();
-}
-
 bool C4Game::CreateViewport(int32_t iPlayer, bool fSilent)
 {
 	return GraphicsSystem.CreateViewport(iPlayer, fSilent);
@@ -1615,7 +1437,7 @@ C4ID DefFileGetID(const char *szFilename)
 	return DefCore.id;
 }
 
-bool C4Game::DropFile(const char *szFilename, int32_t iX, int32_t iY)
+bool C4Game::DropFile(C4Section &section, const char *szFilename, int32_t iX, int32_t iY)
 {
 	C4ID c_id; C4Def *cdef;
 	// Drop def to create object
@@ -1624,10 +1446,10 @@ bool C4Game::DropFile(const char *szFilename, int32_t iX, int32_t iY)
 		// Get id from file
 		if (c_id = DefFileGetID(szFilename))
 			// Get loaded def or try to load def from file
-			if ((cdef = C4Id2Def(c_id))
-				|| (Defs.Load(szFilename, C4D_Load_RX, Config.General.LanguageEx, &*Application.SoundSystem) && (cdef = C4Id2Def(c_id))))
+			if ((cdef = Game.Defs.ID2Def(c_id))
+				|| (Defs.Load(szFilename, C4D_Load_RX, Config.General.LanguageEx, &*Application.SoundSystem) && (cdef = Game.Defs.ID2Def(c_id))))
 			{
-				return DropDef(c_id, iX, iY);
+				return DropDef(section, c_id, iX, iY);
 			}
 		// Failure
 		Console.Out(LoadResStr(C4ResStrTableKey::IDS_CNS_DROPNODEF, GetFilename(szFilename)).c_str());
@@ -1636,12 +1458,12 @@ bool C4Game::DropFile(const char *szFilename, int32_t iX, int32_t iY)
 	return false;
 }
 
-bool C4Game::DropDef(C4ID id, int32_t iX, int32_t iY)
+bool C4Game::DropDef(C4Section &section, C4ID id, int32_t iX, int32_t iY)
 {
 	// def exists?
-	if (C4Id2Def(id))
+	if (Game.Defs.ID2Def(id))
 	{
-		Control.DoInput(CID_EMDropDef, new C4ControlEMDropDef(id, iX, iY), CDT_Decide);
+		Control.DoInput(CID_EMDropDef, new C4ControlEMDropDef(section.Number, id, iX, iY), CDT_Decide);
 		return true;
 	}
 	else
@@ -1654,79 +1476,11 @@ bool C4Game::DropDef(C4ID id, int32_t iX, int32_t iY)
 
 bool C4Game::EnumerateMaterials()
 {
-	// Check material number
-	if (Material.Num > C4MaxMaterial)
-	{
-		LogFatal(C4ResStrTableKey::IDS_PRC_TOOMANYMATS); return false;
-	}
-
-	// Get hardcoded system material indices
-	MVehic = Material.Get("Vehicle"); MCVehic = Mat2PixColDefault(MVehic);
-	MTunnel = Material.Get("Tunnel");
-	MWater = Material.Get("Water");
-	MSnow = Material.Get("Snow");
-	MGranite = Material.Get("Granite");
-
-	const std::string_view material{C4S.Landscape.Material};
-
-	if (const std::size_t pos = material.find('-'); pos != std::string_view::npos)
-	{
-		if (CompareVersion(C4S.Head.C4XVer[0], C4S.Head.C4XVer[1], C4S.Head.C4XVer[2], C4S.Head.C4XVer[3], C4S.Head.C4XVer[4], 4, 9, 10, 15, 359) == -1)
-		{
-			if (!C4S.Landscape.InEarth.IsClear() || !C4S.Animals.EarthNest.IsClear())
-			{
-				DebugLog(spdlog::level::warn, "Scenario.txt: Material={} specifies a texture, which breaks InEarth and Nest before [359]. Version=4,9,10,15,359 or higher enables the fixed behavior.", +C4S.Landscape.Material);
-			}
-
-			MEarth = MNone;
-		}
-		else
-		{
-			MEarth = Material.Get(std::string{material.substr(0, pos)}.c_str());
-		}
-	}
-	else
-	{
-		MEarth = Material.Get(C4S.Landscape.Material);
-	}
-
-	if ((MVehic == MNone) || (MTunnel == MNone))
-	{
-		LogFatal(C4ResStrTableKey::IDS_PRC_NOSYSMATS); return false;
-	}
 	// mapping to landscape palette will occur when landscape has been created
 	// set the pal
 	GraphicsSystem.SetPalette();
 
 	return true;
-}
-
-void C4Game::CastObjects(C4ID id, C4Object *pCreator, int32_t num, int32_t level, int32_t tx, int32_t ty, int32_t iOwner, int32_t iController)
-{
-	int32_t cnt;
-	for (cnt = 0; cnt < num; cnt++)
-	{
-		// force argument evaluation order
-		const auto r4 = itofix(Random(3) + 1);
-		const auto r3 = FIXED10(Random(2 * level + 1) - level);
-		const auto r2 = FIXED10(Random(2 * level + 1) - level);
-		const auto r1 = Random(360);
-		CreateObject(id, pCreator, iOwner, tx, ty, r1, r2, r3, r4, iController);
-	}
-}
-
-void C4Game::BlastCastObjects(C4ID id, C4Object *pCreator, int32_t num, int32_t tx, int32_t ty, int32_t iController)
-{
-	int32_t cnt;
-	for (cnt = 0; cnt < num; cnt++)
-	{
-		// force argument evaluation order
-		const auto r4 = itofix(Random(3) + 1);
-		const auto r3 = FIXED10(Random(61) - 40);
-		const auto r2 = FIXED10(Random(61) - 30);
-		const auto r1 = Random(360);
-		CreateObject(id, pCreator, NO_OWNER, tx, ty, r1, r2, r3, r4, iController);
-	}
 }
 
 void C4Game::Sec1Timer()
@@ -1765,19 +1519,12 @@ void C4Game::Default()
 	FrameSkip = 1; DoSkipFrame = false;
 	PreloadStatus = PreloadLevel::None;
 	Defs.Clear();
-	Material.Default();
-	Objects.Default();
-	BackObjects.Default();
-	ForeObjects.Default();
+	C4S.Default();
 	Players.Default();
-	Weather.Default();
-	Landscape.Default();
+	Material.Default();
 	TextureMap.Default();
 	Rank.Default();
-	MassMover.Default();
-	PXS.Default();
 	GraphicsSystem.Default();
-	C4S.Default();
 	Messages.Clear();
 	MessageInput.Default();
 	Info.Default();
@@ -1791,19 +1538,18 @@ void C4Game::Default()
 	GraphicsResource.Default();
 	Control.Default();
 	MouseControl.Default();
-	PathFinder.Default();
-	TransferZones.Default();
 	GroupSet.Default();
 	pParentGroup = nullptr;
 	pGUI = nullptr;
 	pScenarioSections = pCurrentScenarioSection = nullptr;
 	*CurrentScenarioSection = 0;
-	pGlobalEffects = nullptr;
-	fResortAnyObject = false;
 	pNetworkStatistics = nullptr;
 	IsMusicEnabled = false;
 	iMusicLevel = 100;
 	PlayList.Clear();
+	ObjectsInAllSections.Default();
+	C4Section::ResetEnumerationIndex();
+	SectionsRecentlyDeleted = 0;
 }
 
 void C4Game::Evaluate()
@@ -1845,7 +1591,7 @@ void C4Game::DrawCursors(C4FacetEx &cgo, int32_t iPlayer)
 	for (C4Player *pPlr = Players.First; pPlr; pPlr = pPlr->Next)
 		if (pPlr->Number == iPlayer || iPlayer == NO_OWNER)
 			if (pPlr->CursorFlash || pPlr->SelectFlash)
-				if (pPlr->Cursor)
+				if (pPlr->Cursor && pPlr->Cursor->Section == pPlr->ViewSection)
 				{
 					cursor = pPlr->Cursor;
 					if (Inside<int32_t>(cursor->x - fctCursor.Wdt / 2 - cgo.TargetX, 1 - fctCursor.Wdt, cgo.Wdt) && Inside<int32_t>(cursor->y - cursor->Def->Shape.Hgt / 2 - fctCursor.Hgt - cgo.TargetY, 1 - fctCursor.Hgt, cgo.Hgt))
@@ -1898,22 +1644,7 @@ void C4Game::Ticks()
 	if (pNetworkStatistics) pNetworkStatistics->ExecuteFrame();
 }
 
-bool C4Game::Compile(const char *szSource)
-{
-	if (!szSource) return true;
-	// C4Game is not defaulted on compilation.
-	// Loading of runtime data overrides only certain values.
-	// Doesn't compile players; those will be done later
-	CompileSettings Settings(false, false, true);
-	if (!CompileFromBuf_LogWarn<StdCompilerINIRead>(
-		mkParAdapt(*this, Settings),
-		StdStrBuf(szSource, false),
-		C4CFN_Game))
-		return false;
-	return true;
-}
-
-void C4Game::CompileFunc(StdCompiler *pComp, CompileSettings comp)
+void C4Game::CompileFunc(StdCompiler *pComp, CompileSettings comp, std::function<C4Section &(StdCompiler &)> mainSectionProvider)
 {
 	if (!comp.fScenarioSection && comp.fExact)
 	{
@@ -1934,7 +1665,6 @@ void C4Game::CompileFunc(StdCompiler *pComp, CompileSettings comp)
 		pComp->Value(mkNamingAdapt(Rules,                                   "Rules",                  0));
 		pComp->Value(mkNamingAdapt(PlayList,                                "PlayList",               ""));
 		pComp->Value(mkNamingAdapt(mkStringAdaptMA(CurrentScenarioSection), "CurrentScenarioSection", ""));
-		pComp->Value(mkNamingAdapt(fResortAnyObject,                        "ResortAnyObj",           false));
 		pComp->Value(mkNamingAdapt(IsMusicEnabled,                          "MusicEnabled",           false));
 		pComp->Value(mkNamingAdapt(iMusicLevel,                             "MusicLevel",             100));
 		pComp->Value(mkNamingAdapt(NextMission,                             "NextMission",            StdStrBuf()));
@@ -1945,14 +1675,20 @@ void C4Game::CompileFunc(StdCompiler *pComp, CompileSettings comp)
 
 	pComp->Value(mkNamingAdapt(mkInsertAdapt(Script, ScriptEngine), "Script"));
 
-	if (comp.fExact)
+	if (pComp->isCompiler())
 	{
-		pComp->Value(mkNamingAdapt(Weather,       "Weather"));
-		pComp->Value(mkNamingAdapt(Landscape,     "Landscape"));
-		pComp->Value(mkNamingAdapt(Landscape.Sky, "Sky"));
-	}
+		C4Section *section{nullptr};
 
-	pComp->Value(mkNamingAdapt(mkNamingPtrAdapt(pGlobalEffects, "GlobalEffects"), "Effects"));
+		if (comp.fExact && pComp->NameCount("Weather"))
+		{
+			section = &mainSectionProvider(*pComp);
+			pComp->Value(mkParAdapt(*section, true, false));
+		}
+		else if (pComp->NameCount("Effects"))
+		{
+			pComp->Value(mkParAdapt(section ? *section : mainSectionProvider(*pComp), true, true));
+		}
+	}
 
 	// scoreboard compiles into main level [Scoreboard]
 	if (!comp.fScenarioSection && comp.fExact)
@@ -1995,7 +1731,7 @@ bool C4Game::Preload()
 		{
 			preloadContext->Select(false, true);
 			CStdLock lock{&Game.PreloadMutex};
-			Game.InitGameFirstPart() && Game.InitGameSecondPart(Game.ScenarioFile, nullptr, true, true);
+			Game.InitGameFirstPart() && Game.InitGameSecondPart(Game.ScenarioFile, true, true);
 			preloadContext->Finish();
 			preloadContext->Deselect(true);
 		},
@@ -2019,10 +1755,21 @@ bool C4Game::CanPreload() const
 	return PreloadStatus <= PreloadLevel::Scenario && !PreloadThread.joinable();
 }
 
-bool C4Game::CompileRuntimeData(C4ComponentHost &rGameData)
+bool C4Game::CompileRuntimeData(C4ComponentHost &rGameData, std::function<C4Section &(StdCompiler &)> mainSectionProvider)
 {
-	// Compile
-	if (!Compile(rGameData.GetData())) return false;
+	if (auto *const data = rGameData.GetData(); data)
+	{
+		// C4Game is not defaulted on compilation.
+		// Loading of runtime data overrides only certain values.
+		// Doesn't compile players; those will be done later
+		CompileSettings Settings(false, false, true);
+		if (!CompileFromBuf_LogWarn<StdCompilerINIRead>(
+			mkParAdapt(*this, Settings, mainSectionProvider),
+			StdStrBuf(data, false),
+			C4CFN_Game))
+			return false;
+	}
+
 	// Music System: Set play list
 	Application.MusicSystem->SetPlayList(PlayList.getData());
 	// Success
@@ -2036,7 +1783,7 @@ bool C4Game::SaveData(C4Group &hGroup, bool fSaveSection, bool fInitial, bool fS
 	{
 		Players.EnumeratePointers();
 		ScriptEngine.Strings.EnumStrings();
-		if (pGlobalEffects) pGlobalEffects->EnumeratePointers();
+		std::ranges::for_each(GetNotDeletedSections(), &C4Section::EnumeratePointers);
 	}
 
 	// Decompile
@@ -2049,7 +1796,7 @@ bool C4Game::SaveData(C4Group &hGroup, bool fSaveSection, bool fInitial, bool fS
 	{
 		ScriptEngine.DenumerateVariablePointers();
 		Players.DenumeratePointers();
-		if (pGlobalEffects) pGlobalEffects->DenumeratePointers();
+		std::ranges::for_each(GetNotDeletedSections(), &C4Section::DenumeratePointers);
 	}
 
 	// Initial?
@@ -2255,17 +2002,12 @@ bool C4Game::QuickSave(const char *strFilename, const char *strTitle, bool fForc
 	{
 		Log(C4ResStrTableKey::IDS_GAME_FAILSAVEGAME); delete pGameSave; return false;
 	}
+
 	delete pGameSave;
 
 	// Success
 	Log(C4ResStrTableKey::IDS_CNS_GAMESAVED);
 	return true;
-}
-
-bool LandscapeFree(int32_t x, int32_t y)
-{
-	if (!Inside<int32_t>(x, 0, GBackWdt - 1) || !Inside<int32_t>(y, 0, GBackHgt - 1)) return false;
-	return !DensitySolid(GBackDensity(x, y));
 }
 
 void C4Game::ReloadFile(const char *const path)
@@ -2304,19 +2046,25 @@ bool C4Game::ReloadDef(C4ID id, uint32_t reloadWhat)
 		// Success, update all concerned object faces
 		// may have been done by graphics-update already - but not for objects using graphics of another def
 		// better update everything :)
-		for (clnk = Objects.First; clnk && clnk->Obj; clnk = clnk->Next)
+		for (const auto &section : GetNotDeletedSections())
 		{
-			if (clnk->Obj->id == id)
-				clnk->Obj->UpdateFace(true);
+			for (clnk = section->Objects.First; clnk && clnk->Obj; clnk = clnk->Next)
+			{
+				if (clnk->Obj->id == id)
+					clnk->Obj->UpdateFace(true);
+			}
 		}
 		fSucc = true;
 	}
 	else
 	{
 		// Failure, remove all objects of this type
-		for (clnk = Objects.First; clnk && clnk->Obj; clnk = clnk->Next)
-			if (clnk->Obj->id == id)
-				clnk->Obj->AssignRemoval();
+		for (const auto &section : GetNotDeletedSections())
+		{
+			for (clnk = section->Objects.First; clnk && clnk->Obj; clnk = clnk->Next)
+				if (clnk->Obj->id == id)
+					clnk->Obj->AssignRemoval();
+		}
 		// safety: If a removed def is being profiled, profiling must stop
 		C4AulProfiler::Abort();
 		// Kill def
@@ -2346,7 +2094,7 @@ bool C4Game::ReloadParticle(const char *szName)
 	if (!pDef->Reload())
 	{
 		// safer: remove all particles
-		ParticleSystem.ClearParticles();
+		std::ranges::for_each(GetNotDeletedSections(), &C4ParticleSystem::ClearParticles, &C4Section::Particles);
 		// clear def
 		delete pDef;
 		// log
@@ -2358,119 +2106,112 @@ bool C4Game::ReloadParticle(const char *szName)
 	return true;
 }
 
-bool C4Game::InitGame(C4Group &hGroup, C4ScenarioSection *section, bool fLoadSky)
+bool C4Game::InitGame(C4Group &hGroup, bool fLoadSky)
 {
 	const CStdLock lock{&PreloadMutex};
 	{
-		if (!section)
+		RestartRestoreInfos.Clear();
+
+		C4PlayerInfo *info;
+		for (int32_t i = 0; info = PlayerInfos.GetPlayerInfoByIndex(i); ++i)
 		{
-			RestartRestoreInfos.Clear();
-
-			C4PlayerInfo *info;
-			for (int32_t i = 0; info = PlayerInfos.GetPlayerInfoByIndex(i); ++i)
+			if (!info->IsRemoved() && !info->IsInvisible())
 			{
-				if (!info->IsRemoved() && !info->IsInvisible())
-				{
-					RestartRestoreInfos.Players.emplace(std::string{info->GetName()}, C4NetworkRestartInfos::Player{std::string{info->GetName()}, info->GetType(), info->GetColor(), info->GetTeam()});
-				}
+				RestartRestoreInfos.Players.emplace(std::string{info->GetName()}, C4NetworkRestartInfos::Player{std::string{info->GetName()}, info->GetType(), info->GetColor(), info->GetTeam()});
 			}
+		}
 
-			// file monitor
-			if (Config.Developer.AutoFileReload && !Application.isFullScreen && !FileMonitor)
+		// file monitor
+		if (Config.Developer.AutoFileReload && !Application.isFullScreen && !FileMonitor)
+		{
+			try
 			{
-				try
-				{
-					FileMonitor = std::make_unique<C4FileMonitor>(std::bind(&C4Game::ReloadFile, this, std::placeholders::_1));
-				}
-				catch (const std::runtime_error &e)
-				{
-					Log(C4ResStrTableKey::IDS_ERR_FILEMONITOR, e.what());
-				}
+				FileMonitor = std::make_unique<C4FileMonitor>(std::bind(&C4Game::ReloadFile, this, std::placeholders::_1));
 			}
-
-			CStdLock lock{&PreloadMutex};
-			if (!InitGameFirstPart()) return false;
-
-			// join local players for regular games
-			// should be done before record/replay is initialized, so the players are stored in PlayerInfos.txt
-			// for local savegame resumes, players are joined into PlayerInfos and later associated in InitPlayers
-			if (!Network.isEnabled())
+			catch (const std::runtime_error &e)
 			{
-				PlayerInfos.InitLocal();
+				Log(C4ResStrTableKey::IDS_ERR_FILEMONITOR, e.what());
 			}
+		}
 
-			// for replays, make sure teams are assigned correctly
-			if (C4S.Head.Replay)
+		CStdLock lock{&PreloadMutex};
+		if (!InitGameFirstPart()) return false;
+
+		// join local players for regular games
+		// should be done before record/replay is initialized, so the players are stored in PlayerInfos.txt
+		// for local savegame resumes, players are joined into PlayerInfos and later associated in InitPlayers
+		if (!Network.isEnabled())
+		{
+			PlayerInfos.InitLocal();
+		}
+
+		// for replays, make sure teams are assigned correctly
+		if (C4S.Head.Replay)
+		{
+			PlayerInfos.RecheckAutoGeneratedTeams(); // checks that all teams used in playerinfos exist
+			Teams.RecheckPlayers();                  // syncs player list of teams with teams set in PlayerInfos
+		}
+
+		for (const auto &def : Parameters.GameRes.iterRes(NRT_Definitions))
+		{
+			auto group = std::make_unique<C4Group>();
+			if (!group->Open(def.getFile()))
 			{
-				PlayerInfos.RecheckAutoGeneratedTeams(); // checks that all teams used in playerinfos exist
-				Teams.RecheckPlayers();                  // syncs player list of teams with teams set in PlayerInfos
-			}
-
-			for (const auto &def : Parameters.GameRes.iterRes(NRT_Definitions))
-			{
-				auto group = std::make_unique<C4Group>();
-				if (!group->Open(def.getFile()))
-				{
-					LogFatal(C4ResStrTableKey::IDS_ERR_LOAD_OPENRES, def.getFile(), group->GetError());
-					return false;
-				}
-
-				GroupSet.RegisterGroup(*group.release(), true, C4GSPrio_Definitions, C4GSCnt_DefinitionRoot, true);
-			}
-
-			// Graphics and fonts (may reinit main font, too)
-			// Call it here for overloads by C4GroupSet (definitions, Extra.c4g, scenario, folders etc.)
-			Log(C4ResStrTableKey::IDS_PRC_GFXRES);
-			if (!GraphicsResource.Init())
-			{
+				LogFatal(C4ResStrTableKey::IDS_ERR_LOAD_OPENRES, def.getFile(), group->GetError());
 				return false;
 			}
 
-			SetInitProgress(10);
+			GroupSet.RegisterGroup(*group.release(), true, C4GSPrio_Definitions, C4GSCnt_DefinitionRoot, true);
 		}
+
+		// Graphics and fonts (may reinit main font, too)
+		// Call it here for overloads by C4GroupSet (definitions, Extra.c4g, scenario, folders etc.)
+		Log(C4ResStrTableKey::IDS_PRC_GFXRES);
+		if (!GraphicsResource.Init())
+		{
+			return false;
+		}
+
+		SetInitProgress(10);
 
 		// determine startup player count
 		if (!FrameCounter) Parameters.StartupPlayerCount = PlayerInfos.GetStartupCount();
 
 		// The Landscape is the last long chunk of loading time, so it's a good place to start the music fadeout
-		if (!section) Application.MusicSystem->Stop(2000);
+		Application.MusicSystem->Stop(2000);
 
-		if (!InitGameSecondPart(hGroup, section, fLoadSky, false))
+		if (!InitGameSecondPart(hGroup, fLoadSky, false))
 		{
 			return false;
 		}
 	}
 
-	if (!section)
+	// set up control (inits Record/Replay)
+	if (!InitControl())
 	{
-		// set up control (inits Record/Replay)
-		if (!InitControl())
-		{
-			LogFatal(C4ResStrTableKey::IDS_ERR_INITCONTROL);
-			return false;
-		}
+		LogFatal(C4ResStrTableKey::IDS_ERR_INITCONTROL);
+		return false;
 	}
 
 	// Load round results
-	if (!section)
-		if (hGroup.FindEntry(C4CFN_RoundResults))
+	if (hGroup.FindEntry(C4CFN_RoundResults))
+	{
+		if (!RoundResults.Load(hGroup, C4CFN_RoundResults))
 		{
-			if (!RoundResults.Load(hGroup, C4CFN_RoundResults))
-			{
-				LogFatal(C4ResStrTableKey::IDS_ERR_ERRORLOADINGROUNDRESULTS); return false;
-			}
+			LogFatal(C4ResStrTableKey::IDS_ERR_ERRORLOADINGROUNDRESULTS); return false;
 		}
-		else
-		{
-			RoundResults.Init();
-		}
+	}
+	else
+	{
+		RoundResults.Init();
+	}
 
 	// Denumerate game data pointers
-	if (!section) ScriptEngine.DenumerateVariablePointers();
-	if (!section && pGlobalEffects) pGlobalEffects->DenumeratePointers();
+	ScriptEngine.DenumerateVariablePointers();
+	std::ranges::for_each(Sections, &C4Section::DenumeratePointers);
 
 	// Check object enumeration
-	if (!CheckObjectEnumeration())
+	if (!std::ranges::all_of(Sections, &C4Section::CheckObjectEnumeration))
 	{
 		LogFatal(C4ResStrTableKey::IDS_ERR_CHECKOBJECTENUMERATION);
 		return false;
@@ -2479,49 +2220,32 @@ bool C4Game::InitGame(C4Group &hGroup, C4ScenarioSection *section, bool fLoadSky
 	// Okay; everything in denumerated state from now on
 	PointersDenumerated = true;
 
-	for (const auto &def : Defs)
-	{
-		def->Script.Call(PSF_InitializeDef, {section ? C4VString(section->GetName()) : C4VNull});
-	}
-
-	// Environment
-	if (!C4S.Head.NoInitialize && LandscapeLoaded)
+	if (!C4S.Head.NoInitialize && std::ranges::any_of(Sections, &C4Section::LandscapeLoaded))
 	{
 		Log(C4ResStrTableKey::IDS_PRC_ENVIRONMENT);
-		InitVegetation();
-		InitInEarth();
-		InitAnimals();
-		InitEnvironment();
 		InitRules();
 		InitGoals();
-		Landscape.PostInitMap();
 	}
+
+	std::ranges::for_each(GetNotDeletedSections(), &C4Section::InitThirdPart);
+
 	SetInitProgress(94);
-
-	// Weather
-	if (LandscapeLoaded) Weather.Init(!C4S.Head.SaveGame);
 	SetInitProgress(95);
-
-	// FoW-color
-	FoWColor = C4S.Game.FoWColor;
 
 	// goal objects exist, but no GOAL? create it
 	if (!C4S.Head.SaveGame)
-		if (Objects.ObjectsInt().ObjectCount(C4ID_None, C4D_Goal))
-			if (!Objects.FindInternal(C4Id("GOAL")))
-				CreateObject(C4Id("GOAL"), nullptr);
+		if (Sections.front()->Objects.ObjectsInt().ObjectCount(C4ID_None, C4D_Goal))
+			if (!Sections.front()->Objects.FindInternal(C4Id("GOAL")))
+				Sections.front()->CreateObject(C4Id("GOAL"), nullptr);
 	SetInitProgress(96);
 
 	// close any gfx groups, because they are no longer needed (after sky is initialized)
 	GraphicsResource.CloseFiles();
 
-	if (!section)
-	{
-		// Music
-		Application.MusicSystem->PlayScenarioMusic(ScenarioFile);
-		SetMusicLevel(iMusicLevel);
-		SetInitProgress(97);
-	}
+	// Music
+	Application.MusicSystem->PlayScenarioMusic(ScenarioFile);
+	SetMusicLevel(iMusicLevel);
+	SetInitProgress(97);
 	return true;
 }
 
@@ -2601,10 +2325,19 @@ bool C4Game::InitGameFirstPart()
 	SetInitProgress(57);
 
 	// Materials
-	if (!InitMaterialTexture())
+	if (!LoadMaterialsAndTextures(Material, TextureMap, nullptr, nullptr))
 	{
 		return false;
 	}
+
+	for (auto &section : Sections)
+	{
+		if (!section->InitMaterialTexture({{Material, TextureMap}}))
+		{
+			return false;
+		}
+	}
+
 	SetInitProgress(58);
 
 	// Colorize defs by material
@@ -2616,84 +2349,25 @@ bool C4Game::InitGameFirstPart()
 	return true;
 }
 
-bool C4Game::InitGameSecondPart(C4Group &hGroup, C4ScenarioSection *section, bool fLoadSky, bool preloading)
+bool C4Game::InitGameSecondPart(C4Group &hGroup, bool fLoadSky, bool preloading)
 {
-	if (!section)
+	if (PreloadStatus >= PreloadLevel::LandscapeObjects || (C4S.Landscape.MapPlayerExtend && preloading))
 	{
-		if (PreloadStatus >= PreloadLevel::LandscapeObjects || (C4S.Landscape.MapPlayerExtend && preloading))
-		{
-			return true;
-		}
-
-		FixRandom(Parameters.RandomSeed);
+		return true;
 	}
 
-	// Landscape
-	Log(C4ResStrTableKey::IDS_PRC_LANDSCAPE);
-	LandscapeLoaded = false;
-	if (!Landscape.Init(hGroup, section, fLoadSky, LandscapeLoaded, !!C4S.Head.SaveGame))
-	{
-		LogFatal(C4ResStrTableKey::IDS_ERR_GBACK); return false;
-	}
-	SetInitProgress(88);
-	// the savegame flag is set if runtime data is present, in which case this is to be used
-	// except for scenario sections
-	if (LandscapeLoaded && (!C4S.Head.SaveGame || section))
-		Landscape.ScenarioInit();
-	SetInitProgress(89);
-	// Init main object list
-	Objects.Init(Landscape.Width, Landscape.Height);
+	FixRandom(Parameters.RandomSeed);
 
-	// Pathfinder
-	if (!section) PathFinder.Init(&LandscapeFree, &TransferZones);
-	SetInitProgress(90);
-
-	// PXS
-	if (hGroup.FindEntry(C4CFN_PXS))
+	if (!std::ranges::all_of(Sections, [](const auto &section) { return section->InitSecondPart(C4Random::Default, true) && section->FinishObjectLoading(false); }))
 	{
-		if (!PXS.Load(hGroup))
-		{
-			LogFatal(C4ResStrTableKey::IDS_ERR_PXS); return false;
-		}
-	}
-	else if (LandscapeLoaded)
-	{
-		PXS.Clear();
-		PXS.Default();
-	}
-	SetInitProgress(91);
-
-	// MassMover
-	if (hGroup.FindEntry(C4CFN_MassMover))
-	{
-		if (!MassMover.Load(hGroup))
-		{
-			LogFatal(C4ResStrTableKey::IDS_ERR_MOVER); return false;
-		}
-	}
-	else if (LandscapeLoaded)
-	{
-		// clear and set mass-mover to default values
-		MassMover.Clear();
-		MassMover.Default();
+		return false;
 	}
 
-	SetInitProgress(92);
+	InitValueOverloads();
 
-	// definition value overloads
-	if (!section) InitValueOverloads();
-
-	Objects.Clear(!section);
-
-	// Load objects
-	int32_t iObjects = Objects.Load(hGroup, section);
-	if (iObjects) { Log(C4ResStrTableKey::IDS_PRC_OBJECTSLOADED, iObjects); }
 	SetInitProgress(93);
 
-	if (!section)
-	{
-		PreloadStatus = PreloadLevel::LandscapeObjects;
-	}
+	PreloadStatus = PreloadLevel::LandscapeObjects;
 
 	return true;
 }
@@ -2701,14 +2375,28 @@ bool C4Game::InitGameSecondPart(C4Group &hGroup, C4ScenarioSection *section, boo
 bool C4Game::InitGameFinal()
 {
 	// Validate object owners & assign loaded info objects
-	Objects.ValidateOwners();
-	Objects.AssignInfo();
-	Objects.AssignPlrViewRange(); // update FoW-repellers
+	std::int32_t objectCount{0};
+	for (C4GameObjects &objects : GetNotDeletedSections() | std::views::transform(&C4Section::Objects))
+	{
+		objects.ValidateOwners();
+		objects.AssignInfo();
+		objects.AssignPlrViewRange(); // update FoW-repellers
+		objectCount += objects.ObjectCount();
+	}
 
 	// Script constructor call
-	int32_t iObjCount = Objects.ObjectCount();
-	if (!C4S.Head.SaveGame) Script.Call(PSF_Initialize);
-	if (Objects.ObjectCount() != iObjCount) fScriptCreatedObjects = true;
+	if (!C4S.Head.SaveGame) Script.Call(*Sections.front(), PSF_Initialize); // FIXME
+
+	std::int32_t newObjectCount{0};
+	for (const auto &section : GetNotDeletedSections())
+	{
+		newObjectCount += section->Objects.ObjectCount();
+	}
+
+	if (newObjectCount != objectCount)
+	{
+		fScriptCreatedObjects = true;
+	}
 
 	// Player final init
 	C4Player *pPlr;
@@ -2927,177 +2615,6 @@ bool C4Game::InitControl()
 	return true;
 }
 
-int32_t ListExpandValids(C4IDList &rlist,
-	C4ID *idlist, int32_t maxidlist)
-{
-	int32_t cnt, cnt2, ccount, cpos;
-	for (cpos = 0, cnt = 0; rlist.GetID(cnt); cnt++)
-		if (C4Id2Def(rlist.GetID(cnt, &ccount)))
-			for (cnt2 = 0; cnt2 < ccount; cnt2++)
-				if (cpos < maxidlist)
-				{
-					idlist[cpos] = rlist.GetID(cnt); cpos++;
-				}
-	return cpos;
-}
-
-bool C4Game::PlaceInEarth(C4ID id)
-{
-	int32_t cnt, tx, ty;
-	for (cnt = 0; cnt < 35; cnt++) // cheap trys
-	{
-		tx = Random(GBackWdt); ty = Random(GBackHgt);
-		if (GBackMat(tx, ty) == MEarth)
-			if (CreateObject(id, nullptr, NO_OWNER, tx, ty, Random(360)))
-				return true;
-	}
-	return false;
-}
-
-C4Object *C4Game::PlaceVegetation(C4ID id, int32_t iX, int32_t iY, int32_t iWdt, int32_t iHgt, int32_t iGrowth)
-{
-	int32_t cnt, iTx, iTy, iMaterial;
-
-	// Get definition
-	C4Def *pDef;
-	if (!(pDef = C4Id2Def(id))) return nullptr;
-
-	// No growth specified: full or random growth
-	if (iGrowth <= 0)
-	{
-		iGrowth = FullCon;
-		if (pDef->Growth) if (!Random(3)) iGrowth = Random(FullCon) + 1;
-	}
-
-	// Place by placement type
-	switch (pDef->Placement)
-	{
-	// Surface soil
-	case C4D_Place_Surface:
-		for (cnt = 0; cnt < 20; cnt++)
-		{
-			// Random hit within target area
-			iTx = iX + Random(iWdt); iTy = iY + Random(iHgt);
-			// Above IFT
-			while ((iTy > 0) && GBackIFT(iTx, iTy)) iTy--;
-			// Above semi solid
-			if (!AboveSemiSolid(iTx, iTy) || !Inside<int32_t>(iTy, 50, GBackHgt - 50))
-				continue;
-			// Free above
-			if (GBackSemiSolid(iTx, iTy - pDef->Shape.Hgt) || GBackSemiSolid(iTx, iTy - pDef->Shape.Hgt / 2))
-				continue;
-			// Free upleft and upright
-			if (GBackSemiSolid(iTx - pDef->Shape.Wdt / 2, iTy - pDef->Shape.Hgt * 2 / 3) || GBackSemiSolid(iTx + pDef->Shape.Wdt / 2, iTy - pDef->Shape.Hgt * 2 / 3))
-				continue;
-			// Soil check
-			iTy += 3; // two pix into ground
-			iMaterial = GBackMat(iTx, iTy);
-			if (iMaterial != MNone) if (Material.Map[iMaterial].Soil)
-			{
-				if (!pDef->Growth) iGrowth = FullCon;
-				iTy += 5;
-				return CreateObjectConstruction(id, nullptr, NO_OWNER, iTx, iTy, iGrowth);
-			}
-		}
-		break;
-
-	// Underwater
-	case C4D_Place_Liquid:
-		// Random range
-		iTx = iX + Random(iWdt); iTy = iY + Random(iHgt);
-		// Find liquid
-		if (!FindSurfaceLiquid(iTx, iTy, pDef->Shape.Wdt, pDef->Shape.Hgt))
-			if (!FindLiquid(iTx, iTy, pDef->Shape.Wdt, pDef->Shape.Hgt))
-				return nullptr;
-		// Liquid bottom
-		if (!SemiAboveSolid(iTx, iTy)) return nullptr;
-		iTy += 3;
-		// Create object
-		return CreateObjectConstruction(id, nullptr, NO_OWNER, iTx, iTy, iGrowth);
-	}
-
-	// Undefined placement type
-	return nullptr;
-}
-
-C4Object *C4Game::PlaceAnimal(C4ID idAnimal)
-{
-	C4Def *pDef = C4Id2Def(idAnimal);
-	if (!pDef) return nullptr;
-	int32_t iX, iY;
-	// Placement
-	switch (pDef->Placement)
-	{
-	// Running free
-	case C4D_Place_Surface:
-		iX = Random(GBackWdt); iY = Random(GBackHgt);
-		if (!FindSolidGround(iX, iY, pDef->Shape.Wdt)) return nullptr;
-		break;
-	// In liquid
-	case C4D_Place_Liquid:
-		iX = Random(GBackWdt); iY = Random(GBackHgt);
-		if (!FindSurfaceLiquid(iX, iY, pDef->Shape.Wdt, pDef->Shape.Hgt))
-			if (!FindLiquid(iX, iY, pDef->Shape.Wdt, pDef->Shape.Hgt))
-				return nullptr;
-		iY += pDef->Shape.Hgt / 2;
-		break;
-	// Floating in air
-	case C4D_Place_Air:
-		iX = Random(GBackWdt);
-		for (iY = 0; (iY < GBackHgt) && !GBackSemiSolid(iX, iY); iY++);
-		if (iY <= 0) return nullptr;
-		iY = Random(iY);
-		break;
-	default:
-		return nullptr;
-	}
-	// Create object
-	return CreateObject(idAnimal, nullptr, NO_OWNER, iX, iY);
-}
-
-void C4Game::InitInEarth()
-{
-	const int32_t maxvid = 100;
-	int32_t cnt, vidnum;
-	C4ID vidlist[maxvid];
-	// Amount
-	int32_t amt = (GBackWdt * GBackHgt / 5000) * C4S.Landscape.InEarthLevel.Evaluate() / 100;
-	// List all valid IDs from C4S
-	vidnum = ListExpandValids(C4S.Landscape.InEarth, vidlist, maxvid);
-	// Place
-	if (vidnum > 0)
-		for (cnt = 0; cnt < amt; cnt++)
-			PlaceInEarth(vidlist[Random(vidnum)]);
-}
-
-void C4Game::InitVegetation()
-{
-	const int32_t maxvid = 100;
-	int32_t cnt, vidnum;
-	C4ID vidlist[maxvid];
-	// Amount
-	int32_t amt = (GBackWdt / 50) * C4S.Landscape.VegLevel.Evaluate() / 100;
-	// Get percentage vidlist from C4S
-	vidnum = ListExpandValids(C4S.Landscape.Vegetation, vidlist, maxvid);
-	// Place vegetation
-	if (vidnum > 0)
-		for (cnt = 0; cnt < amt; cnt++)
-			PlaceVegetation(vidlist[Random(vidnum)], 0, 0, GBackWdt, GBackHgt, -1);
-}
-
-void C4Game::InitAnimals()
-{
-	int32_t cnt, cnt2;
-	C4ID idAnimal; int32_t iCount;
-	// Place animals
-	for (cnt = 0; (idAnimal = C4S.Animals.FreeLife.GetID(cnt, &iCount)); cnt++)
-		for (cnt2 = 0; cnt2 < iCount; cnt2++)
-			PlaceAnimal(idAnimal);
-	// Place nests
-	for (cnt = 0; (idAnimal = C4S.Animals.EarthNest.GetID(cnt, &iCount)); cnt++)
-		for (cnt2 = 0; cnt2 < iCount; cnt2++)
-			PlaceInEarth(idAnimal);
-}
 
 void C4Game::ParseCommandLine(const char *szCmdLine)
 {
@@ -3339,6 +2856,51 @@ void C4Game::LoadScenarioScripts()
 	}
 }
 
+void C4Game::SectionRemovalCheck()
+{
+	std::erase_if(SectionsPendingDeletion, [this](const auto &section)
+	{
+		if (!section->RemovalDelay)
+		{
+			for (C4Player *player{Players.First}; player; player = player->Next)
+			{
+				player->ClearViewSection(*section);
+			}
+
+			return true;
+		}
+		else
+		{
+			section->RemovalDelay--;
+			return false;
+		}
+	});
+
+	if (SectionsRecentlyDeleted)
+	{
+		SectionsPendingDeletion.reserve(SectionsPendingDeletion.size() + SectionsRecentlyDeleted);
+
+		for (auto it = Sections.begin(); it != Sections.end(); )
+		{
+			if ((*it)->IsDeleted())
+			{
+				--(*it)->RemovalDelay;
+				SectionsPendingDeletion.emplace_back(std::move(*it));
+				it = Sections.erase(it);
+
+				if (--SectionsRecentlyDeleted == 0)
+				{
+					break;
+				}
+			}
+			else
+			{
+				++it;
+			}
+		}
+	}
+}
+
 bool C4Game::InitKeyboard()
 {
 	// clear previous
@@ -3462,6 +3024,224 @@ bool C4Game::InitKeyboard()
 	return true;
 }
 
+std::uint32_t C4Game::CreateSection(const char *const name, std::string callback, C4Section &sourceSection, C4Object *const	target)
+{
+	C4Section *const section{SectionsLoading.emplace_back(std::make_unique<C4Section>(name), std::move(callback), sourceSection.Number, target ? target->Number : 0).Section.get()};
+
+	const std::lock_guard lock{SectionLoadMutex};
+
+#ifndef USE_CONSOLE
+	SectionLoadQueue.emplace(section, SectionGLCtx{lpDDraw->CreateContext(Application.pWindow, &Application)}, std::nullopt, C4Random::Default.Clone());
+#else
+	SectionLoadQueue.emplace(section, std::nullopt);
+#endif
+
+	SectionLoadSemaphore.release();
+
+	return section->Number;
+}
+
+std::uint32_t C4Game::CreateEmptySection(const C4SLandscape &landscape, std::string callback, C4Section &sourceSection, C4Object *const	target)
+{
+	C4Section *const section{SectionsLoading.emplace_back(std::make_unique<C4Section>(), std::move(callback), sourceSection.Number, target ? target->Number : 0).Section.get()};
+
+	const std::lock_guard lock{SectionLoadMutex};
+
+#ifndef USE_CONSOLE
+	SectionLoadQueue.emplace(section, SectionGLCtx{lpDDraw->CreateContext(Application.pWindow, &Application)}, landscape, C4Random::Default.Clone());
+#else
+	SectionLoadQueue.emplace(section, landscape);
+#endif
+
+	SectionLoadSemaphore.release();
+
+	return section->Number;
+}
+
+void C4Game::OnSectionLoaded(const std::uint32_t sectionNumber, const std::int32_t byClient, const bool success)
+{
+	if (Network.isEnabled() && !Network.isHost()) return;
+
+	C4Section *section;
+	if (const auto it = std::ranges::find(SectionsLoading, sectionNumber, [](const auto &sectionWithCallback) { return sectionWithCallback.Section->Number; }); it != SectionsLoading.end())
+	{
+		section = it->Section.get();
+	}
+	else
+	{
+		return;
+	}
+
+	std::unordered_map<std::int32_t, bool> *clients;
+
+	if (SectionsLoadingClients.contains(section))
+	{
+		clients = &SectionsLoadingClients.at(section);
+		clients->try_emplace(byClient, success);
+	}
+	else
+	{
+		clients = &SectionsLoadingClients.try_emplace(section, std::unordered_map{std::pair{byClient, success}}).first->second;
+	}
+
+	bool allClientsLoadedSuccessful{true};
+
+	for (C4Client *client{nullptr}; (client = Game.Clients.getClient(client)); )
+	{
+		if (const auto it = clients->find(client->getID()); it != clients->end())
+		{
+			allClientsLoadedSuccessful &= it->second;
+		}
+		else
+		{
+			return;
+		}
+	}
+
+	// all clients have loaded; send control
+	Control.DoInput(CID_SectionLoadFinished, new C4ControlSectionLoadFinished{sectionNumber, allClientsLoadedSuccessful}, CDT_Decide);
+}
+
+void C4Game::OnSectionLoadFinished(const std::uint32_t sectionNumber, bool success)
+{
+	auto it = std::ranges::find(SectionsLoading, sectionNumber, [](const auto &sectionWithCallback) { return sectionWithCallback.Section->Number; });
+	if (it == SectionsLoading.end())
+	{
+		return;
+	}
+
+	SectionWithCallback sectionWithCallback{std::move(*it)};
+	SectionsLoading.erase(it);
+
+	C4AulScript *script;
+	C4Object *obj{nullptr};
+	if (sectionWithCallback.Target)
+	{
+		obj = Game.SafeObjectPointer(sectionWithCallback.Target);
+		if (!obj)
+		{
+			return;
+		}
+
+		script = &obj->Def->Script;
+	}
+	else
+	{
+		script = &ScriptEngine;
+	}
+
+	C4Section *callbackSection{GetSectionByNumber(sectionWithCallback.CallbackSection)};
+	if (!callbackSection)
+	{
+		callbackSection = Sections.front().get();
+	}
+
+	const std::uint32_t newSectionNumber{sectionWithCallback.Section->Number};
+
+	if (success)
+	{
+		auto it = Sections.emplace(Sections.end(), std::move(sectionWithCallback.Section));
+		success = it->get()->FinishObjectLoading(true);
+		if (success)
+		{
+			it->get()->DenumeratePointers();
+			success = it->get()->InitThirdPart();
+		}
+
+		if (!success)
+		{
+			Sections.erase(it);
+		}
+	}
+
+	C4AulScriptFunc *const func{script->GetSFuncWarn(sectionWithCallback.Callback.c_str(), AA_PROTECTED, "section callback")};
+	if (func)
+	{
+		func->Exec(*callbackSection, obj, C4AulParSet{C4VInt(static_cast<C4ValueInt>(newSectionNumber)), C4VBool(success)});
+	}
+}
+
+C4Object *C4Game::CreateObject(C4ID type, C4Section &section, C4Object *pCreator, int32_t owner, int32_t x, int32_t y, int32_t r, C4Fixed xdir, C4Fixed ydir, C4Fixed rdir, int32_t iController)
+{
+	C4Def *const def{Defs.ID2Def(type)};
+	if (!def)
+	{
+		return nullptr;
+	}
+
+	const bool inAllSections{(def->Category & (C4D_Goal | C4D_Rule)) != 0};
+	C4Section &targetSection{inAllSections ? *Sections.front() : section};
+
+	C4Object *const obj{targetSection.CreateObject(type, pCreator, owner, x, y, r, xdir, ydir, rdir, iController)};
+	if (inAllSections && obj)
+	{
+		ObjectsInAllSections.Add(obj, C4ObjectList::stMain);
+	}
+
+	return obj;
+}
+
+void C4Game::SectionLoadProc(std::stop_token stopToken)
+{
+	for (;;)
+	{
+		SectionLoadSemaphore.acquire();
+		if (stopToken.stop_requested())
+		{
+			break;
+		}
+
+		SectionLoadArgs sectionLoadArgs;
+
+		{
+			const std::lock_guard lock{SectionLoadMutex};
+
+			if (SectionLoadQueue.empty())
+			{
+				spdlog::error("SectionLoadProc: Semaphore acquired, but queue is empty!");
+				continue;
+			}
+
+			sectionLoadArgs = std::move(SectionLoadQueue.front());
+			SectionLoadQueue.pop();
+		}
+
+#ifndef USE_CONSOLE
+		sectionLoadArgs.Context.Select();
+#endif
+
+		const bool success{(sectionLoadArgs.Landscape
+				? sectionLoadArgs.Section->InitFromEmptyLandscape(ScenarioFile, *sectionLoadArgs.Landscape)
+				: sectionLoadArgs.Section->InitFromTemplate(ScenarioFile))
+				&& sectionLoadArgs.Section->InitMaterialTexture({{Material, TextureMap}})
+				&& sectionLoadArgs.Section->InitSecondPart(*sectionLoadArgs.Random, false)};
+
+		{
+			const std::lock_guard lock{SectionDoneMutex};
+			SectionDoneVector.emplace_back(sectionLoadArgs.Section, success);
+		}
+
+		//&& sectionLoadArgs.Section->Number <= 1
+	}
+}
+
+void C4Game::CheckLoadedSections()
+{
+	const std::lock_guard lock{SectionDoneMutex};
+	if (!SectionDoneVector.empty())
+	{
+		for (auto &sectionDoneArgs : SectionDoneVector)
+		{
+			Control.DoInput(CID_SectionLoaded, new C4ControlSectionLoaded{
+								sectionDoneArgs.Section->Number,
+								sectionDoneArgs.Success
+							}, CDT_Decide);
+		}
+
+		SectionDoneVector.clear();
+	}
+}
+
 bool C4Game::InitSystem()
 {
 	// Timer flags
@@ -3509,7 +3289,7 @@ C4Player *C4Game::JoinPlayer(const char *szFilename, int32_t iAtClient, const ch
 	assert(pInfo);
 	C4Player *pPlr;
 	// Join
-	if (!(pPlr = Players.Join(szFilename, true, iAtClient, szAtClientName, pInfo))) return nullptr;
+	if (!(pPlr = Players.Join(szFilename, true, iAtClient, szAtClientName, pInfo, *Sections.front()))) return nullptr; // FIXME
 	// Player final init
 	pPlr->FinalInit(true);
 	// Create player viewport
@@ -3677,8 +3457,7 @@ void C4Game::ShowGameOverDlg()
 
 void C4Game::SyncClearance()
 {
-	PXS.SyncClearance();
-	Objects.SyncClearance();
+	std::ranges::for_each(GetNotDeletedSections(), &C4Section::SyncClearance);
 }
 
 void C4Game::Synchronize(bool fSavePlayerFiles)
@@ -3691,10 +3470,8 @@ void C4Game::Synchronize(bool fSavePlayerFiles)
 	FixRandom(Parameters.RandomSeed);
 	// Synchronize members
 	Defs.Synchronize();
-	Landscape.Synchronize();
-	MassMover.Synchronize();
-	PXS.Synchronize();
-	Objects.Synchronize();
+	std::ranges::for_each(GetNotDeletedSections(), &C4Section::Synchronize);
+
 	// synchronize local player files if desired
 	// this will reset any InActionTimes!
 	// (not in replay mode)
@@ -3703,66 +3480,10 @@ void C4Game::Synchronize(bool fSavePlayerFiles)
 	if (Network.isEnabled()) Network.OnGameSynchronized();
 	// TransferZone synchronization: Must do this after dynamic creation to avoid synchronization loss
 	// if UpdateTransferZone-callbacks do sync-relevant changes
-	TransferZones.Synchronize();
+	std::ranges::for_each(GetNotDeletedSections(), &C4Section::SynchronizeTransferZones);
 }
 
-C4Object *C4Game::FindBase(int32_t iPlayer, int32_t iIndex)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		// Status
-		if (cObj->Status)
-			// Base
-			if (cObj->Base == iPlayer)
-				// Index
-				if (iIndex == 0) return cObj;
-				else iIndex--;
-	// Not found
-	return nullptr;
-}
 
-C4Object *C4Game::FindFriendlyBase(int32_t iPlayer, int32_t iIndex)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-		// Status
-		if (cObj->Status)
-			// Base
-			if (ValidPlr(cObj->Base))
-				// friendly Base
-				if (!Hostile(cObj->Base, iPlayer))
-					// Index
-					if (iIndex == 0) return cObj;
-					else iIndex--;
-	// Not found
-	return nullptr;
-}
-
-C4Object *C4Game::FindObjectByCommand(int32_t iCommand, C4Object *pTarget, C4Value iTx, int32_t iTy, C4Object *pTarget2, C4Object *pFindNext)
-{
-	C4Object *cObj; C4ObjectLink *clnk;
-	for (clnk = Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
-	{
-		// find next
-		if (pFindNext) { if (cObj == pFindNext) pFindNext = nullptr; continue; }
-		// Status
-		if (cObj->Status)
-			// Check commands
-			for (C4Command *pCommand = cObj->Command; pCommand; pCommand = pCommand->Next)
-				// Command
-				if (pCommand->Command == iCommand)
-					// Target
-					if (!pTarget || (pCommand->Target == pTarget))
-						// Position
-						if ((!iTx && !iTy) || ((pCommand->Tx == iTx) && (pCommand->Ty == iTy)))
-							// Target2
-							if (!pTarget2 || (pCommand->Target2 == pTarget2))
-								// Found
-								return cObj;
-	}
-	// Not found
-	return nullptr;
-}
 
 bool C4Game::InitNetworkFromAddress(const char *szAddress)
 {
@@ -3890,51 +3611,6 @@ bool C4Game::InitNetworkHost()
 	return true;
 }
 
-bool C4Game::CheckObjectEnumeration()
-{
-	// Check valid & maximum number & duplicate numbers
-	int32_t iMax = 0;
-	C4Object *cObj; C4ObjectLink *clnk;
-	C4Object *cObj2; C4ObjectLink *clnk2;
-	clnk = Objects.First; if (!clnk) clnk = Objects.InactiveObjects.First;
-	while (clnk)
-	{
-		// Invalid number
-		cObj = clnk->Obj;
-		if (cObj->Number < 1)
-		{
-			LogNTr(spdlog::level::err, "Invalid object enumeration number ({}) of object {} (x={})", cObj->Number, C4IdText(cObj->id), cObj->x);
-			return false;
-		}
-		// Max
-		if (cObj->Number > iMax) iMax = cObj->Number;
-		// Duplicate
-		for (clnk2 = Objects.First; clnk2 && (cObj2 = clnk2->Obj); clnk2 = clnk2->Next)
-			if (cObj2 != cObj)
-				if (cObj->Number == cObj2->Number)
-				{
-					LogNTr(spdlog::level::err, "Duplicate object enumeration number {} ({} and {})", cObj2->Number, cObj->GetName(), cObj2->GetName());
-					return false;
-				}
-		for (clnk2 = Objects.InactiveObjects.First; clnk2 && (cObj2 = clnk2->Obj); clnk2 = clnk2->Next)
-			if (cObj2 != cObj)
-				if (cObj->Number == cObj2->Number)
-				{
-					LogNTr(spdlog::level::err, "Duplicate object enumeration number {} ({} and {}(i))", cObj2->Number, cObj->GetName(), cObj2->GetName());
-					return false;
-				}
-		// next
-		if (!clnk->Next)
-			if (clnk == Objects.Last) clnk = Objects.InactiveObjects.First; else clnk = nullptr;
-		else
-			clnk = clnk->Next;
-	}
-	// Adjust enumeration index
-	if (iMax > ObjectEnumerationIndex) ObjectEnumerationIndex = iMax;
-	// Done
-	return true;
-}
-
 std::vector<std::string> C4Game::FoldersWithLocalsDefs(std::string path)
 {
 	std::vector<std::string> defs;
@@ -3980,16 +3656,6 @@ void C4Game::InitValueOverloads()
 			pDef->Value = C4S.Game.Realism.ValueOverloads.GetIDCount(idOvrl);
 }
 
-void C4Game::InitEnvironment()
-{
-	// Place environment objects
-	int32_t cnt, cnt2;
-	C4ID idType; int32_t iCount;
-	for (cnt = 0; (idType = C4S.Environment.Objects.GetID(cnt, &iCount)); cnt++)
-		for (cnt2 = 0; cnt2 < iCount; cnt2++)
-			CreateObject(idType, nullptr);
-}
-
 void C4Game::InitRules()
 {
 	// Place rule objects
@@ -3997,7 +3663,7 @@ void C4Game::InitRules()
 	C4ID idType; int32_t iCount;
 	for (cnt = 0; (idType = Parameters.Rules.GetID(cnt, &iCount)); cnt++)
 		for (cnt2 = 0; cnt2 < std::max<int32_t>(iCount, 1); cnt2++)
-			CreateObject(idType, nullptr);
+			Sections.front()->CreateObject(idType, nullptr);
 	// Update rule flags
 	UpdateRules();
 }
@@ -4009,18 +3675,24 @@ void C4Game::InitGoals()
 	C4ID idType; int32_t iCount;
 	for (cnt = 0; (idType = Parameters.Goals.GetID(cnt, &iCount)); cnt++)
 		for (cnt2 = 0; cnt2 < iCount; cnt2++)
-			CreateObject(idType, nullptr);
+			Sections.front()->CreateObject(idType, nullptr);
 }
 
 void C4Game::UpdateRules()
 {
 	if (Tick255 && FrameCounter > 1) return;
 	Rules = 0;
-	if (ObjectCount(C4ID_Energy))       Rules |= C4RULE_StructuresNeedEnergy;
-	if (ObjectCount(C4ID_CnMaterial))   Rules |= C4RULE_ConstructionNeedsMaterial;
-	if (ObjectCount(C4ID_FlagRemvbl))   Rules |= C4RULE_FlagRemoveable;
-	if (ObjectCount(C4Id("STSN")))      Rules |= C4RULE_StructuresSnowIn;
-	if (ObjectCount(C4ID_TeamHomebase)) Rules |= C4RULE_TeamHombase;
+
+	const auto checkForId = [this](const C4ID id)
+	{
+		return std::ranges::any_of(GetNotDeletedSections(), [id](const auto &section) { return section->ObjectCount(id); });
+	};
+
+	if (checkForId(C4ID_Energy))       Rules |= C4RULE_StructuresNeedEnergy;
+	if (checkForId(C4ID_CnMaterial))   Rules |= C4RULE_ConstructionNeedsMaterial;
+	if (checkForId(C4ID_FlagRemvbl))   Rules |= C4RULE_FlagRemoveable;
+	if (checkForId(C4Id("STSN")))      Rules |= C4RULE_StructuresSnowIn;
+	if (checkForId(C4ID_TeamHomebase)) Rules |= C4RULE_TeamHombase;
 }
 
 void C4Game::SetInitProgress(float fToProgress)
@@ -4060,6 +3732,9 @@ void C4Game::OnResolutionChanged()
 
 bool C4Game::LoadScenarioSection(const char *szSection, uint32_t dwFlags)
 {
+	LogNTr(spdlog::level::err, "LoadScenarioSection: broken");
+	return false;
+#if 0
 	// note on scenario section saving:
 	// if a scenario section overwrites a value that had used the default values in the main scenario section,
 	// returning to the main section with an unsaved landscape (and thus an unsaved scenario core),
@@ -4177,7 +3852,7 @@ bool C4Game::LoadScenarioSection(const char *szSection, uint32_t dwFlags)
 		}
 	DeleteObjects(false);
 	// remove global effects
-	if (pGlobalEffects) if (~dwFlags | C4S_KEEP_EFFECTS)
+	if (pGlobalEffects)
 	{
 		pGlobalEffects->ClearAll(nullptr, C4FxCall_RemoveClear);
 		// scenario section call might have been done from a global effect
@@ -4213,6 +3888,7 @@ bool C4Game::LoadScenarioSection(const char *szSection, uint32_t dwFlags)
 
 	// done, success
 	return true;
+#endif
 }
 
 bool C4Game::ToggleDebugMode()
@@ -4262,7 +3938,7 @@ bool C4Game::DrawTextSpecImage(C4FacetExSurface &fctTarget, const char *szSpec, 
 	// regular ID? -> Draw def
 	if (LooksLikeID(szSpec))
 	{
-		C4Def *pDef = C4Id2Def(C4Id(szSpec));
+		C4Def *pDef = Game.Defs.ID2Def(C4Id(szSpec));
 		if (!pDef) return false;
 		pDef->Picture2Facet(fctTarget, dwClr);
 		return true;
@@ -4276,7 +3952,7 @@ bool C4Game::DrawTextSpecImage(C4FacetExSurface &fctTarget, const char *szSpec, 
 			int iIndex = -1;
 			if (sscanf(szSpec + 5, "%d", &iIndex) == 1) if (iIndex >= 0)
 			{
-				C4Def *pDef = C4Id2Def(C4Id(idbuf));
+				C4Def *pDef = Game.Defs.ID2Def(C4Id(idbuf));
 				if (!pDef) return false;
 				pDef->Picture2Facet(fctTarget, dwClr, iIndex);
 				return true;
@@ -4389,4 +4065,30 @@ void C4Game::AddDirectoryForMonitoring(const char *const directory)
 bool C4Game::ToggleChat()
 {
 	return C4ChatDlg::ToggleChat();
+}
+
+C4Game::SectionGLCtx::SectionGLCtx(CStdGLCtx *const context)
+	: context{context}
+{
+	if (!context)
+	{
+		throw std::runtime_error{"TODO"};
+	}
+
+	context->Deselect();
+	pGL->GetMainCtx().Select();
+}
+
+C4Game::SectionGLCtx::~SectionGLCtx()
+{
+	if (context && !Application.IsMainThread())
+	{
+		context->Finish();
+		context->Deselect(true);
+	}
+}
+
+void C4Game::SectionGLCtx::Select() const
+{
+	context->Select(false, true);
 }

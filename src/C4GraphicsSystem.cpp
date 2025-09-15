@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <format>
+#include <ranges>
 #include <stdexcept>
 
 C4GraphicsSystem::C4GraphicsSystem()
@@ -157,7 +158,7 @@ void C4GraphicsSystem::Execute()
 	ScreenTick++; if (ScreenTick >= ScreenRate) ScreenTick = 0;
 
 	// Reset object audibility
-	Game.Objects.ResetAudibility();
+	Game.ResetAudibility();
 
 	// some hack to ensure the mouse is drawn after a dialog close and before any
 	// movement messages
@@ -254,6 +255,12 @@ void C4GraphicsSystem::ClearPointers(C4Object *pObj)
 {
 	for (const auto &cvp : Viewports)
 		cvp->ClearPointers(pObj);
+}
+
+void C4GraphicsSystem::ClearSectionPointers(C4Section &section)
+{
+	for (const auto &cvp : Viewports)
+		cvp->ClearSectionPointers(section);
 }
 
 void C4GraphicsSystem::Default()
@@ -382,17 +389,19 @@ void C4GraphicsSystem::RecalculateViewports()
 			cOffY = ViewportArea.Y;
 			cOffWdt = cOffHgt = 0;
 			int32_t ViewportScrollBorder = Application.isFullScreen ? C4ViewportScrollBorder : 0;
-			if (ciViewsX * std::min<int32_t>(cViewWdt, GBackWdt + 2 * ViewportScrollBorder) < ViewportArea.Wdt)
-				cOffX = (ViewportArea.Wdt - ciViewsX * std::min<int32_t>(cViewWdt, GBackWdt + 2 * ViewportScrollBorder)) / 2;
-			if (iViewsH * std::min<int32_t>(cViewHgt, GBackHgt + 2 * ViewportScrollBorder) < ViewportArea.Hgt)
-				cOffY = (ViewportArea.Hgt - iViewsH * std::min<int32_t>(cViewHgt, GBackHgt + 2 * ViewportScrollBorder)) / 2 + ViewportArea.Y;
+
+			C4Section &section{cvp->get()->GetViewRootSection()};
+			if (ciViewsX * std::min<int32_t>(cViewWdt, section.Landscape.Width + 2 * ViewportScrollBorder) < ViewportArea.Wdt)
+				cOffX = (ViewportArea.Wdt - ciViewsX * std::min<int32_t>(cViewWdt, section.Landscape.Width + 2 * ViewportScrollBorder)) / 2;
+			if (iViewsH * std::min<int32_t>(cViewHgt, section.Landscape.Height + 2 * ViewportScrollBorder) < ViewportArea.Hgt)
+				cOffY = (ViewportArea.Hgt - iViewsH * std::min<int32_t>(cViewHgt, section.Landscape.Height + 2 * ViewportScrollBorder)) / 2 + ViewportArea.Y;
 			if (Config.Graphics.SplitscreenDividers)
 			{
 				if (cViewX < ciViewsX - 1) cOffWdt = 4;
 				if (cViewH < iViewsH - 1) cOffHgt = 4;
 			}
-			int32_t coViewWdt = cViewWdt - cOffWdt; if (coViewWdt > GBackWdt + 2 * ViewportScrollBorder) { coViewWdt = GBackWdt + 2 * ViewportScrollBorder; }
-			int32_t coViewHgt = cViewHgt - cOffHgt; if (coViewHgt > GBackHgt + 2 * ViewportScrollBorder) { coViewHgt = GBackHgt + 2 * ViewportScrollBorder; }
+			int32_t coViewWdt = cViewWdt - cOffWdt; if (coViewWdt > section.Landscape.Width + 2 * ViewportScrollBorder) { coViewWdt = section.Landscape.Width + 2 * ViewportScrollBorder; }
+			int32_t coViewHgt = cViewHgt - cOffHgt; if (coViewHgt > section.Landscape.Height + 2 * ViewportScrollBorder) { coViewHgt = section.Landscape.Height + 2 * ViewportScrollBorder; }
 			C4Rect rcOut(cOffX + cViewX * cViewWdt, cOffY + cViewH * cViewHgt, coViewWdt, coViewHgt);
 			(*cvp)->SetOutputSize(rcOut.x, rcOut.y, rcOut.x, rcOut.y, rcOut.Wdt, rcOut.Hgt);
 			++cvp;
@@ -541,7 +550,8 @@ bool C4GraphicsSystem::DoSaveScreenshot(bool fSaveAll, const char *szFilename)
 		// get viewport to draw in
 		const auto &pVP = Viewports.front();
 		// create image large enough to hold the landcape
-		int32_t lWdt = static_cast<int32_t>(ceilf(GBackWdt * scale)), lHgt = static_cast<int32_t>(ceilf(GBackHgt * scale));
+		C4Landscape &landscape{pVP->GetViewRootSection().Landscape};
+		int32_t lWdt = static_cast<int32_t>(ceilf(landscape.Width * scale)), lHgt = static_cast<int32_t>(ceilf(landscape.Height * scale));
 		StdBitmap bmp(lWdt, lHgt, false);
 		// get backbuffer size
 		int32_t bkWdt = static_cast<int32_t>(ceilf(Config.Graphics.ResX * scale)), bkHgt = static_cast<int32_t>(ceilf(Config.Graphics.ResY * scale));
@@ -551,8 +561,8 @@ bool C4GraphicsSystem::DoSaveScreenshot(bool fSaveAll, const char *szFilename)
 		// mark background to be redrawn
 		InvalidateBg();
 		// backup and clear sky parallaxity
-		int32_t iParX = Game.Landscape.Sky.ParX; Game.Landscape.Sky.ParX = 10;
-		int32_t iParY = Game.Landscape.Sky.ParY; Game.Landscape.Sky.ParY = 10;
+		int32_t iParX = landscape.Sky.ParX; landscape.Sky.ParX = 10;
+		int32_t iParY = landscape.Sky.ParY; landscape.Sky.ParY = 10;
 		// temporarily change viewport player
 		int32_t iVpPlr = pVP->Player; pVP->Player = NO_OWNER;
 		// blit all tiles needed
@@ -585,8 +595,8 @@ bool C4GraphicsSystem::DoSaveScreenshot(bool fSaveAll, const char *szFilename)
 		// restore viewport player
 		pVP->Player = iVpPlr;
 		// restore parallaxity
-		Game.Landscape.Sky.ParX = iParX;
-		Game.Landscape.Sky.ParY = iParY;
+		landscape.Sky.ParX = iParX;
+		landscape.Sky.ParY = iParY;
 		// Save bitmap to PNG file
 		try
 		{
@@ -731,13 +741,13 @@ void C4GraphicsSystem::DrawHelp()
 		iX + iWdt / 2 + 64, iY + 64, CStdDDraw::DEFAULT_MESSAGE_COLOR, ALeft);
 }
 
-int32_t C4GraphicsSystem::GetAudibility(int32_t iX, int32_t iY, int32_t *iPan, int32_t iAudibilityRadius)
+int32_t C4GraphicsSystem::GetAudibility(C4Section &section, int32_t iX, int32_t iY, int32_t *iPan, int32_t iAudibilityRadius)
 {
 	// default audibility radius
 	if (!iAudibilityRadius) iAudibilityRadius = C4SoundSystem::AudibilityRadius;
 	// Accumulate audibility by viewports
 	int32_t iAudible = 0; *iPan = 0;
-	for (const auto &cvp : Viewports)
+	for (const auto &cvp : Viewports | std::views::filter([&section](const auto &cvp) { return &cvp->GetViewSection() == &section; }))
 	{
 		auto listenerX = cvp->ViewX + cvp->ViewWdt / 2;
 		auto listenerY = cvp->ViewY + cvp->ViewHgt / 2;
@@ -767,6 +777,11 @@ int32_t C4GraphicsSystem::GetAudibility(int32_t iX, int32_t iY, int32_t *iPan, i
 	}
 	*iPan = BoundBy<int32_t>(*iPan, -100, 100);
 	return iAudible;
+}
+
+bool C4GraphicsSystem::IsSectionAudible(C4Section &section) const
+{
+	return std::ranges::any_of(Viewports, [&section](const auto &cvp) { return &cvp->GetViewSection() == &section; });
 }
 
 void C4GraphicsSystem::SetGamma(uint32_t dwClr1, uint32_t dwClr2, uint32_t dwClr3, int32_t iRampIndex)

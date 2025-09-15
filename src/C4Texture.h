@@ -28,14 +28,22 @@ class C4Texture
 	friend class C4TextureMap;
 
 public:
-	C4Texture();
-	~C4Texture();
-	C4Surface *Surface32;
-	CSurface8 *Surface8;
+	C4Texture(const char *name, std::shared_ptr<C4Surface> surface32);
+	C4Texture(const char *name, std::shared_ptr<CSurface8> surface8);
+
+public:
+	C4Texture(const C4Texture &) = default;
+	C4Texture &operator=(const C4Texture &) = default;
+	C4Texture(C4Texture &&) = default;
+	C4Texture &operator=(C4Texture &&) = default;
+
+
+public:
+	std::shared_ptr<C4Surface> Surface32;
+	std::shared_ptr<CSurface8> Surface8;
 
 protected:
-	char Name[C4M_MaxName + 1];
-	C4Texture *Next;
+	std::array<char, C4M_MaxName + 1> Name;
 };
 
 class C4TexMapEntry
@@ -60,18 +68,25 @@ public:
 	const CPattern &getPattern() const { return MatPattern; }
 	void Clear();
 	bool Create(const char *szMaterial, const char *szTexture);
-	bool Init();
+	bool Init(C4Section &section);
 };
 
 class C4TextureMap
 {
 public:
-	C4TextureMap();
+	C4TextureMap(C4Section *section);
 	~C4TextureMap();
 
+	C4TextureMap(const C4TextureMap &other);
+	C4TextureMap &operator=(const C4TextureMap &other);
+
+	C4TextureMap(C4TextureMap &&other);
+	C4TextureMap &operator=(C4TextureMap &&other);
+
 protected:
-	C4TexMapEntry Entry[C4M_MaxTexIndex];
-	C4Texture *FirstTexture;
+	C4Section *section{nullptr};
+	std::array<C4TexMapEntry, C4M_MaxTexIndex> Entry;
+	std::vector<C4Texture> textures;
 	bool fOverloadMaterials;
 	bool fOverloadTextures;
 	bool fInitialized; // Set after Init() - newly added entries initialized automatically
@@ -87,9 +102,10 @@ public:
 	void StoreMapPalette(uint8_t *bypPalette, C4MaterialMap &rMaterials);
 	static bool LoadFlags(C4Group &hGroup, const char *szEntryName, bool *pOverloadMaterials, bool *pOverloadTextures);
 	int32_t LoadMap(C4Group &hGroup, const char *szEntryName, bool *pOverloadMaterials, bool *pOverloadTextures);
+	bool InitFromMapAndExistingTextures(C4Group &group, const char *entryName, const C4TextureMap &other);
 	int32_t Init();
 	bool SaveMap(C4Group &hGroup, const char *szEntryName);
-	int32_t LoadTextures(C4Group &hGroup, C4Group *OverloadFile = nullptr);
+	int32_t LoadTextures(C4Group &hGroup);
 	const char *GetTexture(size_t iIndex);
 	void MoveIndex(uint8_t byOldIndex, uint8_t byNewIndex); // change index of texture
 	int32_t GetIndex(const char *szMaterial, const char *szTexture, bool fAddIfNotExist = true, const char *szErrorIfFailed = nullptr);

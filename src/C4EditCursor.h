@@ -38,6 +38,7 @@ protected:
 	int32_t X, Y, X2, Y2;
 	bool Hold, DragFrame, DragLine;
 	C4Object *Target, *DropTarget;
+	C4Section *CurrentSection{nullptr};
 #ifdef _WIN32
 	HMENU hMenu;
 #elif defined(WITH_DEVELOPER_MODE)
@@ -55,6 +56,7 @@ public:
 	void Clear();
 	void Execute();
 	void ClearPointers(C4Object *pObj);
+	void ClearSectionPointers(C4Section &section);
 	bool ToggleMode();
 	void Draw(C4FacetEx &cgo);
 	int32_t GetMode();
@@ -64,12 +66,12 @@ public:
 	bool Duplicate();
 	bool OpenPropTools();
 	bool Delete();
-	bool LeftButtonUp();
-	bool LeftButtonDown(bool fControl);
-	bool RightButtonUp();
-	bool RightButtonDown(bool fControl);
-	void MiddleButtonUp();
-	bool Move(int32_t iX, int32_t iY, uint16_t wKeyFlags);
+	bool LeftButtonUp(C4Section &section);
+	bool LeftButtonDown(C4Section &section, bool fControl);
+	bool RightButtonUp(C4Section &section);
+	bool RightButtonDown(C4Section &section, bool fControl);
+	void MiddleButtonUp(C4Section &section);
+	bool Move(C4Section &section, int32_t iX, int32_t iY, uint16_t wKeyFlags);
 	bool Init();
 	bool EditingOK();
 	C4ObjectList &GetSelection() { return Selection; }
@@ -92,8 +94,10 @@ protected:
 	void DrawSelectMark(C4Facet &cgo);
 	void FrameSelection();
 	void MoveSelection(int32_t iXOff, int32_t iYOff);
-	void EMMoveObject(enum C4ControlEMObjectAction eAction, int32_t tx, int32_t ty, C4Object *pTargetObj, const C4ObjectList *pObjs = nullptr, const char *szScript = nullptr);
+	void EMMoveObject(enum C4ControlEMObjectAction eAction, int32_t tx, int32_t ty, C4Object *pTargetObj, const C4ObjectList &objects, const char *szScript = nullptr);
 	void EMControl(enum C4PacketType eCtrlType, class C4ControlPacket *pCtrl);
+	void UpdateCurrentSection(C4Section &section);
+	void ResetSectionDependentState();
 
 #ifdef WITH_DEVELOPER_MODE
 	static void OnDelete(GtkWidget *widget, gpointer data);

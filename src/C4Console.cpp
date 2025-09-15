@@ -226,7 +226,7 @@ INT_PTR CALLBACK ConsoleDlgProc(HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lPara
 		// Remove player
 		if (Inside((int)LOWORD(wParam), IDM_PLAYER_QUIT1, IDM_PLAYER_QUIT2))
 		{
-			Game.Control.Input.Add(CID_EliminatePlayer, new C4ControlEliminatePlayer(LOWORD(wParam) - IDM_PLAYER_QUIT1));
+			Game.Control.Input.Add(CID_EliminatePlayer, new C4ControlEliminatePlayer(0, LOWORD(wParam) - IDM_PLAYER_QUIT1));
 			return TRUE;
 		}
 		// Remove client
@@ -578,7 +578,7 @@ bool C4Console::In(const char *szText)
 	// editing enabled?
 	if (!EditCursor.EditingOK()) return false;
 	// pass through network queue
-	Game.Control.DoInput(CID_Script, new C4ControlScript(szText, C4ControlScript::SCOPE_Console, Config.Developer.ConsoleScriptStrictness), CDT_Decide);
+	Game.Control.DoInput(CID_Script, new C4ControlScript(0, szText, C4ControlScript::SCOPE_Console, Config.Developer.ConsoleScriptStrictness), CDT_Decide);
 	return true;
 }
 
@@ -757,7 +757,7 @@ bool C4Console::SaveGame(bool fSaveGame)
 	if (fSaveGame)
 		pGameSave = new C4GameSaveSavegame();
 	else
-		pGameSave = new C4GameSaveScenario(!Console.Active || Game.Landscape.Mode == C4LSC_Exact, false);
+		pGameSave = new C4GameSaveScenario(false);
 	if (!pGameSave->Save(Game.ScenarioFile, false))
 	{
 		Out("Game::Save failed"); fOkay = false;
@@ -1152,6 +1152,12 @@ void C4Console::ClearPointers(C4Object *pObj)
 {
 	EditCursor.ClearPointers(pObj);
 	PropertyDlg.ClearPointers(pObj);
+}
+
+void C4Console::ClearSectionPointers(C4Section &section)
+{
+	EditCursor.ClearSectionPointers(section);
+	ToolsDlg.ClearSectionPointers(section);
 }
 
 void C4Console::Default()
@@ -1807,7 +1813,10 @@ void C4Console::OnPlrJoin(GtkWidget *item, gpointer data)
 
 void C4Console::OnPlrQuit(GtkWidget *item, gpointer data)
 {
-	Game.Control.Input.Add(CID_EliminatePlayer, new C4ControlEliminatePlayer(GPOINTER_TO_INT(data)));
+	const std::int32_t playerNumber{GPOINTER_TO_INT(data)};
+	C4Player *const player{Game.Players.Get(playerNumber)};
+
+	Game.Control.Input.Add(CID_EliminatePlayer, new C4ControlEliminatePlayer(player->ViewSection->Number, GPOINTER_TO_INT(data)));
 }
 
 void C4Console::OnViewNew(GtkWidget *item, gpointer data)

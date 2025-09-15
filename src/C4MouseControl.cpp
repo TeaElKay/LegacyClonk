@@ -453,7 +453,7 @@ void C4MouseControl::UpdateCursorTarget()
 	}
 
 	// Check player cursor
-	C4Object *pPlrCursor = pPlayer ? pPlayer->Cursor.Object() : nullptr;
+	C4Object *pPlrCursor = pPlayer ? pPlayer->Cursor.Denumerated() : nullptr;
 
 	// Target object
 	uint32_t ocf = OCF_Grab | OCF_Chop | OCF_Container | OCF_Construct | OCF_Living | OCF_Carryable | OCF_Container | OCF_Exclusive;
@@ -464,8 +464,10 @@ void C4MouseControl::UpdateCursorTarget()
 	// Movement
 	if (!FogOfWar && !IsPassive()) Cursor = C4MC_Cursor_Crosshair;
 
+	const auto &[section, childX, childY] = Viewport->MapPointToChildSectionPoint(X, Y);
+
 	// Dig
-	if (!FogOfWar && GBackSolid(X, Y) && !IsPassive())
+	if (!FogOfWar && section.Landscape.GBackSolid(childX, childY) && !IsPassive())
 	{
 		Cursor = C4MC_Cursor_Dig;
 		if (ControlDown) Cursor = C4MC_Cursor_DigMaterial;
@@ -499,8 +501,8 @@ void C4MouseControl::UpdateCursorTarget()
 		}
 		// Chop (reduced range)
 		if (ocf & OCF_Chop)
-			if (Inside<int32_t>(X - iObjX, -TargetObject->Shape.Wdt / 3, +TargetObject->Shape.Wdt / 3))
-				if (Inside<int32_t>(Y - iObjY, -TargetObject->Shape.Wdt / 2, +TargetObject->Shape.Wdt / 3))
+			if (Inside<int32_t>(childX - iObjX, -TargetObject->Shape.Wdt / 3, +TargetObject->Shape.Wdt / 3))
+				if (Inside<int32_t>(childY - iObjY, -TargetObject->Shape.Wdt / 2, +TargetObject->Shape.Wdt / 3))
 					Cursor = C4MC_Cursor_Chop;
 		// Enter
 		if (ocf & OCF_Entrance)
@@ -526,11 +528,18 @@ void C4MouseControl::UpdateCursorTarget()
 	if (pPlrCursor)
 		if (!pPlrCursor->Contained)
 			if (pPlrCursor->GetProcedure() == DFA_WALK)
-				if (Inside<int32_t>(Y - pPlrCursor->y, -25, -10))
+			{
+				std::int32_t plrCursorSectionChildX{X};
+				std::int32_t plrCursorSectionChildY{Y};
+
+				pPlrCursor->Section->ParentPointToPoint(plrCursorSectionChildX, plrCursorSectionChildY);
+
+				if (Inside<int32_t>(plrCursorSectionChildY - pPlrCursor->y, -25, -10))
 				{
-					if (Inside<int32_t>(X - pPlrCursor->x, -15, -1)) Cursor = C4MC_Cursor_JumpLeft;
-					if (Inside<int32_t>(X - pPlrCursor->x, +1, +15)) Cursor = C4MC_Cursor_JumpRight;
+					if (Inside<int32_t>(plrCursorSectionChildX - pPlrCursor->x, -15, -1)) Cursor = C4MC_Cursor_JumpLeft;
+					if (Inside<int32_t>(plrCursorSectionChildX - pPlrCursor->x, +1, +15)) Cursor = C4MC_Cursor_JumpRight;
 				}
+			}
 
 	// Help
 	if (Help)
@@ -595,9 +604,9 @@ void C4MouseControl::UpdateCursorTarget()
 				break;
 
 			case C4MC_Cursor_DigMaterial:
-				if (MatValid(GBackMat(X, Y)))
+				if (section.MatValid(section.Landscape.GetMat(childX, childY)))
 				{
-					SetCaption<C4ResStrTableKey::IDS_CON_DIGOUT>(C4Id2Def(Game.Material.Map[GBackMat(X, Y)].Dig2Object), true);
+					SetCaption<C4ResStrTableKey::IDS_CON_DIGOUT>(Game.Defs.ID2Def(section.Material.Map[section.Landscape.GetMat(X, Y)].Dig2Object), true);
 				}
 				break;
 			}
@@ -628,7 +637,7 @@ int32_t C4MouseControl::UpdateObjectSelection()
 	Selection.Clear();
 	// Add all collectible objects in drag frame to Selection
 	C4Object *cObj; C4ObjectLink *cLnk;
-	for (cLnk = Game.Objects.First; cLnk && (cObj = cLnk->Obj); cLnk = cLnk->Next)
+	for (cLnk = Viewport->GetViewSection().Objects.First; cLnk && (cObj = cLnk->Obj); cLnk = cLnk->Next)
 		if (cObj->Status)
 			if (cObj->OCF & OCF_Carryable)
 				if (!cObj->Contained)
@@ -847,17 +856,18 @@ void C4MouseControl::DragMoving()
 			if (UpdatePutTarget(false))
 				return;
 		// In liquid: drop
-		if (GBackLiquid(X, Y))
+		const auto &[section, x, y] = Viewport->MapPointToChildSectionPoint(X, Y);
+		if (section.Landscape.GBackLiquid(x, y))
 		{
 			Cursor = C4MC_Cursor_Drop; return;
 		}
 		// In free: drop or throw
-		if (!GBackSolid(X, Y))
+		if (!section.Landscape.GBackSolid(x, y))
 		{
 			// Check drop
-			int32_t iX = X, iY = Y;
-			while ((iY < GBackHgt) && !GBackSolid(iX, iY)) iY++;
-			if (Inside<int32_t>(X - iX, -5, +5) && Inside<int32_t>(Y - iY, -5, +5))
+			int32_t iX = x, iY = y;
+			while ((iY < section.Landscape.Height) && !section.Landscape.GBackSolid(iX, iY)) iY++;
+			if (Inside<int32_t>(x - iX, -5, +5) && Inside<int32_t>(y - iY, -5, +5))
 			{
 				Cursor = C4MC_Cursor_Drop; return;
 			}
@@ -865,15 +875,16 @@ void C4MouseControl::DragMoving()
 			C4Fixed fixThrow = ValByPhysical(400, 50000);
 			if (pPlayer->Cursor) fixThrow = ValByPhysical(400, pPlayer->Cursor->GetPhysical()->Throw);
 			// Preferred throwing direction
-			int32_t iDir = +1; if (pPlayer->Cursor) if (pPlayer->Cursor->x > X) iDir = -1;
+			int32_t iDir = +1; if (pPlayer->Cursor) if (pPlayer->Cursor->x > x) iDir = -1;
 			// Throwing height
 			int32_t iHeight = 20; if (pPlayer->Cursor) iHeight = pPlayer->Cursor->Shape.Hgt;
 			// Check throw
-			if (FindThrowingPosition(X, Y, fixThrow * iDir, -fixThrow, iHeight, iX, iY)
-				|| FindThrowingPosition(X, Y, fixThrow * (iDir *= -1), -fixThrow, iHeight, iX, iY))
+			if (section.Landscape.FindThrowingPosition(x, y, fixThrow * iDir, -fixThrow, iHeight, iX, iY)
+				|| section.Landscape.FindThrowingPosition(x, y, fixThrow * (iDir *= -1), -fixThrow, iHeight, iX, iY))
 			{
 				Cursor = (iDir == -1) ? C4MC_Cursor_ThrowLeft : C4MC_Cursor_ThrowRight;
 				ShowPointX = iX; ShowPointY = iY;
+				section.PointToParentPoint(ShowPointX, ShowPointY);
 				return;
 			}
 		}
@@ -962,7 +973,7 @@ void C4MouseControl::DragNone()
 			// Drag id (construction)
 			C4Def *pDef;
 			if (DownRegion.id)
-				if ((pDef = C4Id2Def(DownRegion.id)) && pDef->Constructable)
+				if ((pDef = Game.Defs.ID2Def(DownRegion.id)) && pDef->Constructable)
 				{
 					StartConstructionDrag(DownRegion.id); break;
 				}
@@ -1082,7 +1093,7 @@ void C4MouseControl::CreateDragImage(C4ID id)
 	// Clear old image
 	DragImage.Clear(); DragImage.Default();
 	// Get definition
-	C4Def *pDef = C4Id2Def(id); if (!pDef) return;
+	C4Def *pDef = Game.Defs.ID2Def(id); if (!pDef) return;
 	// in newgfx, it's just the base image, drawn differently...
 	if (pDef->DragImagePicture)
 		DragImage.Set(pDef->Graphics.GetBitmap(), pDef->PictureRect.x, pDef->PictureRect.y, pDef->PictureRect.Wdt, pDef->PictureRect.Hgt);
@@ -1095,7 +1106,7 @@ void C4MouseControl::DragConstruct()
 	Cursor = C4MC_Cursor_Construct;
 	// Check site
 	DragImagePhase = 1;
-	if (!FogOfWar && ConstructionCheck(DragID, X, Y)) DragImagePhase = 0;
+	if (!FogOfWar && Viewport->GetViewSection().Landscape.ConstructionCheck(DragID, X, Y)) DragImagePhase = 0;
 }
 
 void C4MouseControl::LeftUpDragNone()
@@ -1222,6 +1233,8 @@ void C4MouseControl::SendCommand(int32_t iCommand, int32_t iX, int32_t iY, C4Obj
 	if (!pPlr || pPlr->Eliminated) return;
 	// User add multiple command mode
 	if (ShiftDown) iAddMode |= C4P_Command_Append;
+	// Map coordinates
+	pPlr->ViewSection.Denumerated()->ParentPointToPoint(iX, iY);
 	// Command to control queue
 	Game.Input.Add(CID_PlrCommand,
 		new C4ControlPlayerCommand(Player, iCommand, iX, iY, pTarget, pTarget2, iData, iAddMode));
@@ -1268,7 +1281,8 @@ void C4MouseControl::UpdateFogOfWar()
 	// Assume no fog of war
 	FogOfWar = false;
 	// Check for fog of war
-	if ((pPlayer->fFogOfWar && !pPlayer->FoWIsVisible(X, Y)) || X < 0 || Y < 0 || X >= GBackWdt || Y >= GBackHgt)
+	C4Section &rootSection{pPlayer->ViewSection->GetRootSection()};
+	if (X < 0 || Y < 0 || X >= rootSection.Landscape.Width || Y >= rootSection.Landscape.Height || (pPlayer->fFogOfWar && !pPlayer->FoWIsVisible(X, Y)))
 	{
 		FogOfWar = true;
 		// allow dragging, scrolling, region selection and manipulations of objects not affected by FoW
@@ -1318,10 +1332,12 @@ const char *C4MouseControl::GetCaption()
 C4Object *C4MouseControl::GetTargetObject(int32_t iX, int32_t iY, uint32_t &dwOCF, C4Object *pExclude)
 {
 	// find object
-	C4Object *pObj = Game.FindVisObject(ViewX, ViewY, Player, fctViewport, iX, iY, 0, 0, dwOCF, pExclude);
+	const auto &[section, x, y] = Viewport->MapPointToChildSectionPoint(iX, iY);
+
+	C4Object *pObj = section.FindVisObject(ViewX, ViewY, Player, fctViewport, x, y, 0, 0, dwOCF, pExclude);
 	if (!pObj) return nullptr;
 	// adjust OCF
-	pObj->GetOCFForPos(iX, iY, dwOCF);
+	pObj->GetOCFForPos(x, y, dwOCF);
 	return pObj;
 }
 

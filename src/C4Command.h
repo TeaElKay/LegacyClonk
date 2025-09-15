@@ -100,9 +100,10 @@ public:
 	void Clear();
 	void Execute();
 	void ClearPointers(C4Object *pObj);
+	void OnSectionMove(C4Object *obj);
 	void Default();
 	void EnumeratePointers();
-	void DenumeratePointers();
+	void DenumeratePointers(C4Section &section);
 	void CompileFunc(StdCompiler *pComp);
 
 protected:

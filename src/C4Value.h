@@ -28,6 +28,7 @@
 // class declarations
 class C4Value;
 class C4Object;
+class C4Section;
 class C4String;
 class C4ValueArray;
 class C4ValueHash;
@@ -241,7 +242,7 @@ public:
 	const char *GetTypeName() const { return GetC4VName(GetType()); }
 	const char *GetTypeInfo();
 
-	void DenumeratePointer();
+	void DenumeratePointer(C4Section *section = nullptr);
 
 	std::string GetDataString() const;
 

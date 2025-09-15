@@ -27,6 +27,7 @@
 #include "C4ObjectInfo.h"
 #include "C4Particles.h"
 #include "C4Player.h"
+#include "C4Section.h"
 #include "C4Sector.h"
 #include "C4Value.h"
 #include "C4ValueList.h"
@@ -119,6 +120,15 @@ class C4Object
 public:
 	C4Object();
 	~C4Object();
+
+	C4Object(const C4Object &) = delete;
+	C4Object &operator=(const C4Object &) = delete;
+
+	C4Object(C4Object &&) = delete;
+	C4Object &operator=(C4Object &&) = delete;
+
+	C4Section *Section{nullptr};
+
 	int32_t Number; // int32_t, for sync safety on all machines
 	C4ID id;
 	int32_t Status; // NoSave //
@@ -248,14 +258,15 @@ public:
 	bool AssignPlrViewRange();
 	void DrawPicture(C4Facet &cgo, bool fSelected = false, C4RegionList *pRegions = nullptr);
 	void Picture2Facet(C4FacetExSurface &cgo); // set picture to facet, or create facet in current size and draw if specific states are being needed
-	void DenumeratePointers();
+	void DenumeratePointers(bool onlyFromObjectSection);
 	void EnumeratePointers();
 	void Default();
-	bool Init(C4Def *ndef, C4Object *pCreator,
+	bool Init(C4Def *ndef, C4Section &section, C4Object *pCreator,
 		int32_t owner, C4ObjectInfo *info,
 		int32_t nx, int32_t ny, int32_t nr,
 		C4Fixed nxdir, C4Fixed nydir, C4Fixed nrdir, int32_t iController);
 	void CompileFunc(StdCompiler *pComp);
+	void PostCompileInit();
 	void DrawEnergy(C4Facet &cgo);
 	void DrawMagicEnergy(C4Facet &cgo);
 	void DrawBreath(C4Facet &cgo);
@@ -272,6 +283,7 @@ public:
 	void DrawFace(C4FacetEx &cgo, int32_t cgoX, int32_t cgoY, int32_t iPhaseX = 0, int32_t iPhaseY = 0);
 	void Execute();
 	void ClearPointers(C4Object *ptr);
+	void OnSectionMove(C4Object *obj, C4Section &newSection);
 	bool ExecMovement();
 	bool ExecFire(int32_t iIndex, int32_t iCausedByPlr);
 	void ExecAction();
@@ -398,10 +410,7 @@ public:
 	bool DoSelect(bool fCursor = false); // select in crew (or just set cursor) if not disabled
 	void UnSelect(bool fCursor = false); // unselect in crew (or just task away cursor)
 
-	void GetViewPos(int32_t &riX, int32_t &riY, int32_t tx, int32_t ty, const C4Facet &fctViewport) // get position this object is seen at (for given scroll)
-	{
-		if (Category & C4D_Parallax) GetViewPosPar(riX, riY, tx, ty, fctViewport); else { riX = x; riY = y; }
-	}
+	void GetViewPos(int32_t &riX, int32_t &riY, int32_t tx, int32_t ty, const C4Facet &fctViewport);
 
 	void GetViewPosPar(int32_t &riX, int32_t &riY, int32_t tx, int32_t ty, const C4Facet &fctViewport); // get position this object is seen at, calculating parallaxity
 	bool PutAwayUnusedObject(C4Object *pToMakeRoomForObject); // either directly put the least-needed object away, or add a command to do it - return whether successful
@@ -450,4 +459,7 @@ public:
 	// This function is used for:
 	// -Objects that are not to be saved in "SaveScenario"-mode
 	bool IsUserPlayerObject(); // true for any object that belongs to any player (NO_OWNER) or a specified player
+
+
+	void MoveToSection(C4Section &newSection, bool checkContained = true);
 };

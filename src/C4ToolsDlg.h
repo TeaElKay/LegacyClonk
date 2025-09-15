@@ -19,6 +19,7 @@
 #pragma once
 
 #include "C4Constants.h"
+#include "C4ForwardDeclarations.h"
 
 #include <cstdint>
 
@@ -54,6 +55,7 @@ public:
 
 public:
 	bool Active;
+	C4Section *Section;
 #ifdef _WIN32
 	HWND hDialog;
 #ifndef USE_CONSOLE
@@ -142,7 +144,7 @@ public:
 	bool PopMaterial();
 	bool ChangeGrade(int32_t iChange);
 	void UpdatePreview();
-	bool Open();
+	bool Open(C4Section &section);
 	bool SetGrade(int32_t iGrade);
 	bool SetTool(int32_t iTool, bool fTemp);
 	bool ToggleTool() { return !!SetTool((Tool + 1) % 4, false); }
@@ -153,6 +155,8 @@ public:
 	bool SelectMaterial(const char *szMaterial);
 	void SetAlternateTool();
 	void ResetAlternateTool();
+	void SetSection(C4Section &section);
+	void ClearSectionPointers(C4Section &section);
 
 protected:
 	void AssertValidTexture();

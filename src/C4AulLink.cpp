@@ -81,7 +81,7 @@ bool C4AulScript::ResolveIncludes(C4DefList *rDefs)
 	}
 	Resolving = true;
 	// append all includes to local script
-	for (const auto i : Includes)
+	for (const auto [i, nowarn] : Includes)
 	{
 		C4Def *Def = rDefs->ID2Def(i);
 		if (Def)
@@ -93,7 +93,7 @@ bool C4AulScript::ResolveIncludes(C4DefList *rDefs)
 
 			Def->Script.AppendTo(*this, false);
 		}
-		else
+		else if (!nowarn)
 		{
 			// save id in buffer because AulWarn will use the buffer of C4IdText
 			// to get the id of the object in which the error occurs...
@@ -294,7 +294,7 @@ void C4AulScriptEngine::Link(C4DefList *rDefs)
 		}
 
 		// update material pointers
-		Game.Material.UpdateScriptPointers();
+		Game.UpdateMaterialScriptPointers();
 
 		// display state
 		LogNTr(spdlog::level::info, "C4AulScriptEngine linked - {} line{}, {} warning{}, {} error{}",
@@ -324,11 +324,8 @@ void C4AulScriptEngine::ReLink(C4DefList *rDefs)
 	// re-link
 	Link(rDefs);
 
-	// update effect pointers
-	Game.Objects.UpdateScriptPointers();
-
-	// update material pointers
-	Game.Material.UpdateScriptPointers();
+	// update effect and material pointers
+	Game.UpdateScriptPointers();
 }
 
 bool C4AulScriptEngine::ReloadScript(const char *szScript, C4DefList *pDefs)

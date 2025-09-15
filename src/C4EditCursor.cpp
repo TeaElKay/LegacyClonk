@@ -54,7 +54,7 @@ void C4EditCursor::Execute()
 	case C4CNS_ModeEdit:
 		// Hold selection
 		if (Hold)
-			EMMoveObject(EMMO_Move, 0, 0, nullptr, &Selection);
+			EMMoveObject(EMMO_Move, 0, 0, nullptr, Selection);
 		break;
 
 	case C4CNS_ModeDraw:
@@ -116,8 +116,19 @@ void C4EditCursor::ClearPointers(C4Object *pObj)
 		OnSelectionChanged();
 }
 
-bool C4EditCursor::Move(int32_t iX, int32_t iY, uint16_t wKeyFlags)
+void C4EditCursor::ClearSectionPointers(C4Section &section)
 {
+	if (CurrentSection == &section)
+	{
+		CurrentSection = nullptr;
+		ResetSectionDependentState();
+	}
+}
+
+bool C4EditCursor::Move(C4Section &section, int32_t iX, int32_t iY, uint16_t wKeyFlags)
+{
+	UpdateCurrentSection(section);
+
 	// Offset movement
 	int32_t xoff = iX - X; int32_t yoff = iY - Y; X = iX; Y = iY;
 
@@ -137,7 +148,7 @@ bool C4EditCursor::Move(int32_t iX, int32_t iY, uint16_t wKeyFlags)
 			Target = ((wKeyFlags & MK_SHIFT) && Selection.Last) ? Selection.Last->Obj : nullptr;
 			do
 			{
-				Target = Game.FindObject(0, X, Y, 0, 0, OCF_NotContained, nullptr, nullptr, nullptr, nullptr, ANY_OWNER, Target);
+				Target = section.FindObject(0, X, Y, 0, 0, OCF_NotContained, nullptr, nullptr, nullptr, nullptr, ANY_OWNER, Target);
 			} while ((wKeyFlags & MK_SHIFT) && Target && Selection.GetLink(Target));
 		}
 		break;
@@ -177,7 +188,7 @@ bool C4EditCursor::UpdateStatusBar()
 		break;
 
 	case C4CNS_ModeDraw:
-		text = std::format("{}/{} ({})", X, Y, (MatValid(GBackMat(X, Y)) ? Game.Material.Map[GBackMat(X, Y)].Name : LoadResStr(C4ResStrTableKey::IDS_CNS_NOTHING)));
+		text = std::format("{}/{} ({})", X, Y, (CurrentSection->MatValid(CurrentSection->Landscape.GetMat(X, Y)) ? CurrentSection->Material.Map[CurrentSection->Landscape.GetMat(X, Y)].Name : LoadResStr(C4ResStrTableKey::IDS_CNS_NOTHING)));
 		break;
 	}
 	return Console.UpdateCursorBar(text.c_str());
@@ -188,8 +199,10 @@ void C4EditCursor::OnSelectionChanged()
 	fSelectionChanged = true;
 }
 
-bool C4EditCursor::LeftButtonDown(bool fControl)
+bool C4EditCursor::LeftButtonDown(C4Section &section, bool fControl)
 {
+	UpdateCurrentSection(section);
+
 	// Hold
 	Hold = true;
 
@@ -241,8 +254,10 @@ bool C4EditCursor::LeftButtonDown(bool fControl)
 	return true;
 }
 
-bool C4EditCursor::RightButtonDown(bool fControl)
+bool C4EditCursor::RightButtonDown(C4Section &section, bool fControl)
 {
+	UpdateCurrentSection(section);
+
 	switch (Mode)
 	{
 	case C4CNS_ModeEdit:
@@ -274,8 +289,10 @@ bool C4EditCursor::RightButtonDown(bool fControl)
 	return true;
 }
 
-bool C4EditCursor::LeftButtonUp()
+bool C4EditCursor::LeftButtonUp(C4Section &section)
 {
+	UpdateCurrentSection(section);
+
 	// Finish edit/tool
 	switch (Mode)
 	{
@@ -329,8 +346,9 @@ bool SetMenuItemText(HMENU hMenu, WORD id, const char *szText)
 
 #endif
 
-bool C4EditCursor::RightButtonUp()
+bool C4EditCursor::RightButtonUp(C4Section &section)
 {
+	UpdateCurrentSection(section);
 	Target = nullptr;
 
 	DoContextMenu();
@@ -340,8 +358,9 @@ bool C4EditCursor::RightButtonUp()
 	return true;
 }
 
-void C4EditCursor::MiddleButtonUp()
+void C4EditCursor::MiddleButtonUp(C4Section &section)
 {
+	UpdateCurrentSection(section);
 	if (Hold) return;
 
 	ApplyToolPicker();
@@ -350,7 +369,7 @@ void C4EditCursor::MiddleButtonUp()
 bool C4EditCursor::Delete()
 {
 	if (!EditingOK()) return false;
-	EMMoveObject(EMMO_Remove, 0, 0, nullptr, &Selection);
+	EMMoveObject(EMMO_Remove, 0, 0, nullptr, Selection);
 	if (Game.Control.isCtrlHost())
 	{
 		OnSelectionChanged();
@@ -367,7 +386,7 @@ bool C4EditCursor::OpenPropTools()
 		Console.PropertyDlg.Update(Selection);
 		break;
 	case C4CNS_ModeDraw:
-		Console.ToolsDlg.Open();
+		Console.ToolsDlg.Open(*CurrentSection);
 		break;
 	}
 	return true;
@@ -375,7 +394,7 @@ bool C4EditCursor::OpenPropTools()
 
 bool C4EditCursor::Duplicate()
 {
-	EMMoveObject(EMMO_Duplicate, 0, 0, nullptr, &Selection);
+	EMMoveObject(EMMO_Duplicate, 0, 0, nullptr, Selection);
 	return true;
 }
 
@@ -444,14 +463,14 @@ void C4EditCursor::DrawSelectMark(C4Facet &cgo)
 
 void C4EditCursor::MoveSelection(int32_t iXOff, int32_t iYOff)
 {
-	EMMoveObject(EMMO_Move, iXOff, iYOff, nullptr, &Selection);
+	EMMoveObject(EMMO_Move, iXOff, iYOff, nullptr, Selection);
 }
 
 void C4EditCursor::FrameSelection()
 {
 	Selection.Clear();
 	C4Object *cobj; C4ObjectLink *clnk;
-	for (clnk = Game.Objects.First; clnk && (cobj = clnk->Obj); clnk = clnk->Next)
+	for (clnk = CurrentSection->Objects.First; clnk && (cobj = clnk->Obj); clnk = clnk->Next)
 		if (cobj->Status) if (cobj->OCF & OCF_NotContained)
 		{
 			if (Inside(cobj->x, (std::min)(X, X2), (std::max)(X, X2)) && Inside(cobj->y, (std::min)(Y, Y2), (std::max)(Y, Y2)))
@@ -462,7 +481,7 @@ void C4EditCursor::FrameSelection()
 
 bool C4EditCursor::In(const char *szText)
 {
-	EMMoveObject(EMMO_Script, 0, 0, nullptr, &Selection, szText);
+	EMMoveObject(EMMO_Script, 0, 0, nullptr, Selection, szText);
 	return true;
 }
 
@@ -552,7 +571,7 @@ void C4EditCursor::ApplyToolBrush()
 	if (!EditingOK()) return;
 	C4ToolsDlg *pTools = &Console.ToolsDlg;
 	// execute/send control
-	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Brush, Game.Landscape.Mode, X, Y, 0, 0, pTools->Grade, !!pTools->ModeIFT, pTools->Material, pTools->Texture));
+	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Brush, CurrentSection->Landscape.Mode, X, Y, 0, 0, pTools->Grade, !!pTools->ModeIFT, CurrentSection->Number, pTools->Material, pTools->Texture));
 }
 
 void C4EditCursor::ApplyToolLine()
@@ -560,7 +579,7 @@ void C4EditCursor::ApplyToolLine()
 	if (!EditingOK()) return;
 	C4ToolsDlg *pTools = &Console.ToolsDlg;
 	// execute/send control
-	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Line, Game.Landscape.Mode, X, Y, X2, Y2, pTools->Grade, !!pTools->ModeIFT, pTools->Material, pTools->Texture));
+	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Line, CurrentSection->Landscape.Mode, X, Y, X2, Y2, pTools->Grade, !!pTools->ModeIFT, CurrentSection->Number, pTools->Material, pTools->Texture));
 }
 
 void C4EditCursor::ApplyToolRect()
@@ -568,7 +587,7 @@ void C4EditCursor::ApplyToolRect()
 	if (!EditingOK()) return;
 	C4ToolsDlg *pTools = &Console.ToolsDlg;
 	// execute/send control
-	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Rect, Game.Landscape.Mode, X, Y, X2, Y2, pTools->Grade, !!pTools->ModeIFT, pTools->Material, pTools->Texture));
+	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Rect, CurrentSection->Landscape.Mode, X, Y, X2, Y2, pTools->Grade, !!pTools->ModeIFT, CurrentSection->Number, pTools->Material, pTools->Texture));
 }
 
 void C4EditCursor::ApplyToolFill()
@@ -576,7 +595,7 @@ void C4EditCursor::ApplyToolFill()
 	if (!EditingOK()) return;
 	C4ToolsDlg *pTools = &Console.ToolsDlg;
 	// execute/send control
-	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Fill, Game.Landscape.Mode, X, Y, 0, Y2, pTools->Grade, false, pTools->Material));
+	EMControl(CID_EMDrawTool, new C4ControlEMDrawTool(EMDT_Fill, CurrentSection->Landscape.Mode, X, Y, 0, Y2, pTools->Grade, false, CurrentSection->Number, pTools->Material));
 }
 
 bool C4EditCursor::DoContextMenu()
@@ -637,7 +656,7 @@ void C4EditCursor::GrabContents()
 	Hold = true;
 
 	// Exit all objects
-	EMMoveObject(EMMO_Exit, 0, 0, nullptr, &Selection);
+	EMMoveObject(EMMO_Exit, 0, 0, nullptr, Selection);
 }
 
 void C4EditCursor::UpdateDropTarget(uint16_t wKeyFlags)
@@ -648,7 +667,7 @@ void C4EditCursor::UpdateDropTarget(uint16_t wKeyFlags)
 
 	if (wKeyFlags & MK_CONTROL)
 		if (Selection.GetObject())
-			for (clnk = Game.Objects.First; clnk && (cobj = clnk->Obj); clnk = clnk->Next)
+			for (clnk = CurrentSection->Objects.First; clnk && (cobj = clnk->Obj); clnk = clnk->Next)
 				if (cobj->Status)
 					if (!cobj->Contained)
 						if (Inside<int32_t>(X - (cobj->x + cobj->Shape.x), 0, cobj->Shape.Wdt - 1))
@@ -662,7 +681,7 @@ void C4EditCursor::UpdateDropTarget(uint16_t wKeyFlags)
 void C4EditCursor::PutContents()
 {
 	if (!DropTarget) return;
-	EMMoveObject(EMMO_Enter, 0, 0, DropTarget, &Selection);
+	EMMoveObject(EMMO_Enter, 0, 0, DropTarget, Selection);
 }
 
 C4Object *C4EditCursor::GetTarget()
@@ -690,13 +709,13 @@ void C4EditCursor::ApplyToolPicker()
 {
 	int32_t iMaterial;
 	uint8_t byIndex;
-	switch (Game.Landscape.Mode)
+	switch (CurrentSection->Landscape.Mode)
 	{
 	case C4LSC_Static:
 		// Material-texture from map
-		if (byIndex = Game.Landscape.GetMapIndex(X / Game.Landscape.MapZoom, Y / Game.Landscape.MapZoom))
+		if (byIndex = CurrentSection->Landscape.GetMapIndex(X / CurrentSection->Landscape.MapZoom, Y / CurrentSection->Landscape.MapZoom))
 		{
-			const C4TexMapEntry *pTex = Game.TextureMap.GetEntry(byIndex & (IFT - 1));
+			const C4TexMapEntry *pTex = CurrentSection->TextureMap.GetEntry(byIndex & (IFT - 1));
 			if (pTex)
 			{
 				Console.ToolsDlg.SelectMaterial(pTex->GetMaterialName());
@@ -709,10 +728,10 @@ void C4EditCursor::ApplyToolPicker()
 		break;
 	case C4LSC_Exact:
 		// Material only from landscape
-		if (MatValid(iMaterial = GBackMat(X, Y)))
+		if (CurrentSection->MatValid(iMaterial = CurrentSection->Landscape.GetMat(X, Y)))
 		{
-			Console.ToolsDlg.SelectMaterial(Game.Material.Map[iMaterial].Name);
-			Console.ToolsDlg.SetIFT(GBackIFT(X, Y));
+			Console.ToolsDlg.SelectMaterial(CurrentSection->Material.Map[iMaterial].Name);
+			Console.ToolsDlg.SetIFT(CurrentSection->Landscape.GBackIFT(X, Y));
 		}
 		else
 			Console.ToolsDlg.SelectMaterial(C4TLS_MatSky);
@@ -721,27 +740,51 @@ void C4EditCursor::ApplyToolPicker()
 	Hold = false;
 }
 
-void C4EditCursor::EMMoveObject(C4ControlEMObjectAction eAction, int32_t tx, int32_t ty, C4Object *pTargetObj, const C4ObjectList *pObjs, const char *szScript)
+void C4EditCursor::EMMoveObject(C4ControlEMObjectAction eAction, int32_t tx, int32_t ty, C4Object *pTargetObj, const C4ObjectList &objects, const char *szScript)
 {
 	// construct object list
 	int32_t iObjCnt = 0; int32_t *pObjIDs = nullptr;
-	if (pObjs && (iObjCnt = pObjs->ObjectCount()))
+	if ((iObjCnt = objects.ObjectCount()))
 	{
 		pObjIDs = new int32_t[iObjCnt];
 		// fill
 		int32_t i = 0;
-		for (C4ObjectLink *pLnk = pObjs->First; pLnk; pLnk = pLnk->Next, i++)
+		for (C4ObjectLink *pLnk = objects.First; pLnk; pLnk = pLnk->Next, i++)
 			if (pLnk->Obj && pLnk->Obj->Status)
 				pObjIDs[i] = pLnk->Obj->Number;
 	}
 
 	// execute control
-	EMControl(CID_EMMoveObj, new C4ControlEMMoveObject(eAction, tx, ty, pTargetObj, iObjCnt, pObjIDs, szScript, Config.Developer.ConsoleScriptStrictness));
+	EMControl(CID_EMMoveObj, new C4ControlEMMoveObject(eAction, tx, ty, CurrentSection->Number, pTargetObj, iObjCnt, pObjIDs, szScript, Config.Developer.ConsoleScriptStrictness));
 }
 
 void C4EditCursor::EMControl(C4PacketType eCtrlType, C4ControlPacket *pCtrl)
 {
 	Game.Control.DoInput(eCtrlType, pCtrl, CDT_Decide);
+}
+
+void C4EditCursor::UpdateCurrentSection(C4Section &section)
+{
+	if (CurrentSection != &section)
+	{
+		CurrentSection = &section;
+		ResetSectionDependentState();
+	}
+}
+
+void C4EditCursor::ResetSectionDependentState()
+{
+	Target = nullptr;
+	DropTarget = nullptr;
+	Selection.Clear();
+	DragFrame = false;
+	DragLine = false;
+	fSelectionChanged = true;
+
+	if (CurrentSection && Mode == C4CNS_ModeDraw)
+	{
+		Console.ToolsDlg.SetSection(*CurrentSection);
+	}
 }
 
 #ifdef WITH_DEVELOPER_MODE

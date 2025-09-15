@@ -109,7 +109,7 @@ LRESULT APIENTRY C4ViewportWindow::WinProc(HWND hwnd, UINT uMsg, WPARAM wParam, 
 		break;
 
 	case WM_USER_DROPDEF:
-		Game.DropDef(lParam, cvp->ViewX + static_cast<int32_t>(LOWORD(wParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(wParam) / scale));
+		Game.DropDef(cvp->GetViewSection(), lParam, cvp->ViewX + static_cast<int32_t>(LOWORD(wParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(wParam) / scale));
 		break;
 
 	case WM_SIZE:
@@ -178,18 +178,18 @@ LRESULT APIENTRY C4ViewportWindow::WinProc(HWND hwnd, UINT uMsg, WPARAM wParam, 
 		{
 		case WM_LBUTTONDOWN:
 			// movement update needed before, so target is always up-to-date
-			Console.EditCursor.Move(cvp->ViewX + static_cast<int32_t>(LOWORD(lParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(lParam) / scale), wParam);
-			Console.EditCursor.LeftButtonDown(wParam & MK_CONTROL); break;
+			Console.EditCursor.Move(cvp->GetViewSection(), cvp->ViewX + static_cast<int32_t>(LOWORD(lParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(lParam) / scale), wParam);
+			Console.EditCursor.LeftButtonDown(cvp->GetViewSection(), wParam & MK_CONTROL); break;
 
-		case WM_LBUTTONUP: Console.EditCursor.LeftButtonUp(); break;
+		case WM_LBUTTONUP: Console.EditCursor.LeftButtonUp(cvp->GetViewSection()); break;
 
-		case WM_RBUTTONDOWN: Console.EditCursor.RightButtonDown(wParam & MK_CONTROL); break;
+		case WM_RBUTTONDOWN: Console.EditCursor.RightButtonDown(cvp->GetViewSection(), wParam & MK_CONTROL); break;
 
-		case WM_RBUTTONUP: Console.EditCursor.RightButtonUp(); break;
+		case WM_RBUTTONUP: Console.EditCursor.RightButtonUp(cvp->GetViewSection()); break;
 
-		case WM_MBUTTONUP: Console.EditCursor.MiddleButtonUp(); break;
+		case WM_MBUTTONUP: Console.EditCursor.MiddleButtonUp(cvp->GetViewSection()); break;
 
-		case WM_MOUSEMOVE: Console.EditCursor.Move(cvp->ViewX + static_cast<int32_t>(LOWORD(lParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(lParam) / scale), wParam); break;
+		case WM_MOUSEMOVE: Console.EditCursor.Move(cvp->GetViewSection(), cvp->ViewX + static_cast<int32_t>(LOWORD(lParam) / scale), cvp->ViewY + static_cast<int32_t>(HIWORD(lParam) / scale), wParam); break;
 		}
 	}
 
@@ -233,7 +233,7 @@ bool C4Viewport::DropFiles(HANDLE hDrop)
 	{
 		DragQueryFileA((HDROP)hDrop, cnt, szFilename, 500);
 		DragQueryPoint((HDROP)hDrop, &pntPoint);
-		Game.DropFile(szFilename, ViewX + pntPoint.x, ViewY + pntPoint.y);
+		Game.DropFile(GetViewSection(), szFilename, ViewX + pntPoint.x, ViewY + pntPoint.y);
 	}
 	DragFinish((HDROP)hDrop);
 	return true;
@@ -270,19 +270,22 @@ bool C4Viewport::TogglePlayerLock()
 bool C4Viewport::ScrollBarsByViewPosition()
 {
 	if (PlayerLock) return false;
+
+	const auto landscapeWidth = GetViewSection().Landscape.Width;
+
 	SCROLLINFO scroll;
 	scroll.cbSize = sizeof(SCROLLINFO);
 	// Vertical
 	scroll.fMask = SIF_ALL;
 	scroll.nMin = 0;
-	scroll.nMax = GBackHgt;
+	scroll.nMax = landscapeWidth;
 	scroll.nPage = ViewHgt;
 	scroll.nPos = ViewY;
 	SetScrollInfo(pWindow->hWindow, SB_VERT, &scroll, TRUE);
 	// Horizontal
 	scroll.fMask = SIF_ALL;
 	scroll.nMin = 0;
-	scroll.nMax = GBackWdt;
+	scroll.nMax = landscapeWidth;
 	scroll.nPage = ViewWdt;
 	scroll.nPos = ViewX;
 	SetScrollInfo(pWindow->hWindow, SB_HORZ, &scroll, TRUE);
@@ -310,9 +313,11 @@ GtkWidget *C4ViewportWindow::InitGUI()
 	v_scrollbar = gtk_scrollbar_new(GTK_ORIENTATION_VERTICAL, nullptr);
 	table = gtk_table_new(2, 2, FALSE);
 
+	C4Section &section{cvp->GetViewSection()};
+
 	GtkAdjustment *adjustment = gtk_range_get_adjustment(GTK_RANGE(h_scrollbar));
 	gtk_adjustment_set_lower(adjustment, 0);
-	gtk_adjustment_set_upper(adjustment, GBackWdt);
+	gtk_adjustment_set_upper(adjustment, section.Landscape.Width);
 	gtk_adjustment_set_step_increment(adjustment, ViewportScrollSpeed);
 
 	g_signal_connect(
@@ -324,7 +329,7 @@ GtkWidget *C4ViewportWindow::InitGUI()
 
 	adjustment = gtk_range_get_adjustment(GTK_RANGE(v_scrollbar));
 	gtk_adjustment_set_lower(adjustment, 0);
-	gtk_adjustment_set_upper(adjustment, GBackHgt);
+	gtk_adjustment_set_upper(adjustment, section.Landscape.Height);
 	gtk_adjustment_set_step_increment(adjustment, ViewportScrollSpeed);
 
 	g_signal_connect(
@@ -428,7 +433,7 @@ void C4ViewportWindow::OnDragDataReceivedStatic(GtkWidget *widget, GdkDragContex
 		gchar *file = g_filename_from_uri(*uri, nullptr, nullptr);
 		if (!file) continue;
 
-		Game.DropFile(file, window->cvp->ViewX + static_cast<int32_t>(x / scale), window->cvp->ViewY + static_cast<int32_t>(y / scale));
+		Game.DropFile(window->cvp->GetViewSection(), file, window->cvp->ViewX + static_cast<int32_t>(x / scale), window->cvp->ViewY + static_cast<int32_t>(y / scale));
 		g_free(file);
 	}
 
@@ -532,10 +537,10 @@ gboolean C4ViewportWindow::OnButtonPressStatic(GtkWidget *widget, GdkEventButton
 		switch (event->button)
 		{
 		case 1:
-			Console.EditCursor.LeftButtonDown(event->state & MK_CONTROL);
+			Console.EditCursor.LeftButtonDown(window->cvp->GetViewSection(), event->state & MK_CONTROL);
 			break;
 		case 3:
-			Console.EditCursor.RightButtonDown(event->state & MK_CONTROL);
+			Console.EditCursor.RightButtonDown(window->cvp->GetViewSection(), event->state & MK_CONTROL);
 			break;
 		}
 	}
@@ -567,13 +572,13 @@ gboolean C4ViewportWindow::OnButtonReleaseStatic(GtkWidget *widget, GdkEventButt
 		switch (event->button)
 		{
 		case 1:
-			Console.EditCursor.LeftButtonUp();
+			Console.EditCursor.LeftButtonUp(window->cvp->GetViewSection());
 			break;
 		case 2:
-			Console.EditCursor.MiddleButtonUp();
+			Console.EditCursor.MiddleButtonUp(window->cvp->GetViewSection());
 			break;
 		case 3:
-			Console.EditCursor.RightButtonUp();
+			Console.EditCursor.RightButtonUp(window->cvp->GetViewSection());
 			break;
 		}
 	}
@@ -593,7 +598,7 @@ gboolean C4ViewportWindow::OnMotionNotifyStatic(GtkWidget *widget, GdkEventMotio
 	{
 		const auto scale = Application.GetScale();
 
-		Console.EditCursor.Move(window->cvp->ViewX + static_cast<int32_t>(event->x / scale), window->cvp->ViewY + static_cast<int32_t>(event->y / scale), event->state);
+		Console.EditCursor.Move(window->cvp->GetViewSection(), window->cvp->ViewX + static_cast<int32_t>(event->x / scale), window->cvp->ViewY + static_cast<int32_t>(event->y / scale), event->state);
 	}
 
 	return TRUE;
@@ -830,10 +835,11 @@ void C4Viewport::Clear()
 	DrawX = DrawY = 0;
 	Regions.Clear();
 	dViewX = dViewY = -31337;
-	ViewOffsX = ViewOffsY = 0;
+	ViewOffsets.clear();
+	previousViewRootSection = nullptr;
 }
 
-void C4Viewport::DrawOverlay(C4FacetEx &cgo)
+void C4Viewport::DrawOverlay(C4FacetEx &cgo, C4Section &viewSection)
 {
 	if (!Game.C4S.Head.Film || !Game.C4S.Head.Replay)
 	{
@@ -842,7 +848,7 @@ void C4Viewport::DrawOverlay(C4FacetEx &cgo)
 		DrawCursorInfo(cgo);
 		C4ST_STOP(CInfoStat)
 		C4ST_STARTNEW(PInfoStat, "C4Viewport::DrawOverlay: Player Info")
-		DrawPlayerInfo(cgo);
+		DrawPlayerInfo(cgo, viewSection);
 		C4ST_STOP(PInfoStat)
 		C4ST_STARTNEW(MenuStat, "C4Viewport::DrawOverlay: Menu")
 		DrawMenu(cgo);
@@ -850,7 +856,7 @@ void C4Viewport::DrawOverlay(C4FacetEx &cgo)
 	}
 	// Game messages
 	C4ST_STARTNEW(MsgStat, "C4Viewport::DrawOverlay: Messages")
-	Game.Messages.Draw(cgo, Player);
+	Game.Messages.Draw(cgo, Player, viewSection);
 	C4ST_STOP(MsgStat)
 
 	// Control overlays (if not film/replay)
@@ -1030,22 +1036,28 @@ void C4Viewport::Draw(C4FacetEx &cgo, bool fDrawOverlay)
 	if (fDrawOverlay)
 	{
 		// Draw landscape borders. Only if overlay, so complete map screenshots don't get messed up
-		if (BorderLeft)  Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, DrawX, DrawY, BorderLeft, ViewHgt, -DrawX, -DrawY);
-		if (BorderTop)   Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, DrawX + BorderLeft, DrawY, ViewWdt - BorderLeft - BorderRight, BorderTop, -DrawX - BorderLeft, -DrawY);
-		if (BorderRight) Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, DrawX + ViewWdt - BorderRight, DrawY, BorderRight, ViewHgt, -DrawX - ViewWdt + BorderRight, -DrawY);
-		if (BorderBottom)Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, DrawX + BorderLeft, DrawY + ViewHgt - BorderBottom, ViewWdt - BorderLeft - BorderRight, BorderBottom, -DrawX - BorderLeft, -DrawY - ViewHgt + BorderBottom);
+		if (BorderLeft)  Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, cgo.X, cgo.Y, BorderLeft, cgo.Hgt, -cgo.X, -cgo.Y);
+		if (BorderTop)   Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, cgo.X + BorderLeft, cgo.Y, cgo.Wdt - BorderLeft - BorderRight, BorderTop, -cgo.X - BorderLeft, -cgo.Y);
+		if (BorderRight) Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, cgo.X + cgo.Wdt - BorderRight, cgo.Y, BorderRight, cgo.Hgt, -cgo.X - cgo.Wdt + BorderRight, -cgo.Y);
+		if (BorderBottom)Application.DDraw->BlitSurfaceTile(Game.GraphicsResource.fctBackground.Surface, cgo.Surface, cgo.X + BorderLeft, cgo.Y + cgo.Hgt - BorderBottom, cgo.Wdt - BorderLeft - BorderRight, BorderBottom, -cgo.X - BorderLeft, -cgo.Y - cgo.Hgt + BorderBottom);
 
-		// Set clippers
-		Application.DDraw->SetPrimaryClipper(DrawX + BorderLeft, DrawY + BorderTop, DrawX + ViewWdt - 1 - BorderRight, DrawY + ViewHgt - 1 - BorderBottom);
 		cgo.X += BorderLeft; cgo.Y += BorderTop; cgo.Wdt -= BorderLeft + BorderRight; cgo.Hgt -= BorderTop + BorderBottom;
 		cgo.TargetX += BorderLeft; cgo.TargetY += BorderTop;
 	}
 
+	// Set clippers
+	Application.DDraw->SetPrimaryClipper(cgo.X, cgo.Y, cgo.X + cgo.Wdt - 1, cgo.Y + cgo.Hgt - 1);
+
+	C4Section &viewRootSection{GetViewRootSection()};
+
 	// landscape mod by FoW
 	C4Player *pPlr = Game.Players.Get(Player);
-	if (pPlr && pPlr->fFogOfWar)
+
+	const bool fowEnabled{pPlr && pPlr->fFogOfWar && viewRootSection.Landscape.Width >= viewRootSection.C4S.Landscape.FoWRes && viewRootSection.Landscape.Height >= viewRootSection.C4S.Landscape.FoWRes};
+
+	if (fowEnabled)
 	{
-		ClrModMap.Reset(Game.C4S.Landscape.FoWRes, Game.C4S.Landscape.FoWRes, ViewWdt, ViewHgt, cgo.TargetX, cgo.TargetY, 0, 0, cgo.X, cgo.Y, Game.FoWColor, cgo.Surface);
+		ClrModMap.Reset(viewRootSection.C4S.Landscape.FoWRes, viewRootSection.C4S.Landscape.FoWRes, cgo.Wdt, cgo.Hgt, cgo.TargetX, cgo.TargetY, 0, 0, cgo.X, cgo.Y, Game.FoWColor, cgo.Surface);
 		pPlr->FoW2Map(ClrModMap, cgo.X - cgo.TargetX, cgo.Y - cgo.TargetY);
 		lpDDraw->SetClrModMap(&ClrModMap);
 		lpDDraw->SetClrModMapEnabled(true);
@@ -1054,40 +1066,11 @@ void C4Viewport::Draw(C4FacetEx &cgo, bool fDrawOverlay)
 		lpDDraw->SetClrModMapEnabled(false);
 
 	C4ST_STARTNEW(SkyStat, "C4Viewport::Draw: Sky")
-	Game.Landscape.Sky.Draw(cgo);
+	viewRootSection.Landscape.Sky.Draw(cgo);
 	C4ST_STOP(SkyStat)
-	Game.BackObjects.DrawAll(cgo, Player);
 
-	// Draw Landscape
-	C4ST_STARTNEW(LandStat, "C4Viewport::Draw: Landscape")
-	Game.Landscape.Draw(cgo, Player);
-	C4ST_STOP(LandStat)
+	DrawSection(cgo, viewRootSection, pPlr, fowEnabled);
 
-	// draw PXS (unclipped!)
-	C4ST_STARTNEW(PXSStat, "C4Viewport::Draw: PXS")
-	Game.PXS.Draw(cgo);
-	C4ST_STOP(PXSStat)
-
-	// draw objects
-	C4ST_STARTNEW(ObjStat, "C4Viewport::Draw: Objects")
-	Game.Objects.Draw(cgo, Player);
-	C4ST_STOP(ObjStat)
-
-	// draw global particles
-	C4ST_STARTNEW(PartStat, "C4Viewport::Draw: Particles")
-	Game.Particles.GlobalParticles.Draw(cgo, nullptr);
-	C4ST_STOP(PartStat)
-
-	// draw foreground objects
-	Game.ForeObjects.DrawIfCategory(cgo, Player, C4D_Parallax, true);
-
-	// Draw PathFinder
-	if (Game.GraphicsSystem.ShowPathfinder) Game.PathFinder.Draw(cgo);
-
-	// Draw overlay
-	if (!Game.C4S.Head.Film || !Game.C4S.Head.Replay) Game.DrawCursors(cgo, Player);
-
-	// FogOfWar-mod off
 	lpDDraw->SetClrModMapEnabled(false);
 
 	// now restore complete cgo range for overlay drawing
@@ -1095,18 +1078,17 @@ void C4Viewport::Draw(C4FacetEx &cgo, bool fDrawOverlay)
 	{
 		cgo.X -= BorderLeft; cgo.Y -= BorderTop; cgo.Wdt += BorderLeft + BorderRight; cgo.Hgt += BorderTop + BorderBottom;
 		cgo.TargetX -= BorderLeft; cgo.TargetY -= BorderTop;
-		Application.DDraw->SetPrimaryClipper(DrawX, DrawY, DrawX + ViewWdt - 1, DrawY + ViewHgt - 1);
+		Application.DDraw->SetPrimaryClipper(cgo.X, cgo.Y, cgo.X + cgo.Wdt - 1, cgo.Y + cgo.Hgt - 1);
 	}
 
-	// draw custom GUI objects
-	Game.ForeObjects.DrawIfCategory(cgo, Player, C4D_Parallax, false);
+	DrawParallaxObjects(cgo, viewRootSection);
 
 	// Draw overlay
 	C4ST_STARTNEW(OvrStat, "C4Viewport::Draw: Overlay")
 
 	if (!Application.isFullScreen) Console.EditCursor.Draw(cgo);
 
-	if (fDrawOverlay) DrawOverlay(cgo);
+	if (fDrawOverlay) DrawOverlay(cgo, viewRootSection);
 
 	// Netstats
 	if (Game.GraphicsSystem.ShowNetstatus)
@@ -1116,6 +1098,72 @@ void C4Viewport::Draw(C4FacetEx &cgo, bool fDrawOverlay)
 
 	// Remove clippers
 	if (fDrawOverlay) Application.DDraw->NoPrimaryClipper();
+}
+
+void C4Viewport::DrawSection(C4FacetEx &cgo, C4Section &section, C4Player *plr, const bool fowEnabled)
+{
+	section.Objects.BackObjects.DrawAll(cgo, Player);
+
+	// Draw Landscape
+	C4ST_STARTNEW(LandStat, "C4Viewport::Draw: Landscape")
+	section.Landscape.Draw(cgo, Player);
+	C4ST_STOP(LandStat)
+
+	// draw PXS (unclipped!)
+	C4ST_STARTNEW(PXSStat, "C4Viewport::Draw: PXS")
+	section.PXS.Draw(cgo);
+	C4ST_STOP(PXSStat)
+
+	// draw objects
+	C4ST_STARTNEW(ObjStat, "C4Viewport::Draw: Objects")
+	section.Objects.Draw(cgo, Player);
+	C4ST_STOP(ObjStat)
+
+	// draw global particles
+	C4ST_STARTNEW(PartStat, "C4Viewport::Draw: Particles")
+	section.Particles.GlobalParticles.Draw(cgo, nullptr);
+	C4ST_STOP(PartStat)
+
+	// draw foreground objects
+	section.Objects.ForeObjects.DrawIfCategory(cgo, Player, C4D_Parallax, true);
+
+	// Draw PathFinder
+	if (Game.GraphicsSystem.ShowPathfinder) section.PathFinder.Draw(cgo);
+
+	// Draw overlay
+	if ((!Game.C4S.Head.Film || !Game.C4S.Head.Replay) && &GetViewSection() == &section) Game.DrawCursors(cgo, Player);
+
+	for (const auto &child : section.Children | std::views::filter([](const auto &child) { return child->ChildVisible; }))
+	{
+		const C4Rect &bounds{child->RenderAsChildBounds};
+
+		C4FacetEx ccgo;
+		ccgo.Set(cgo.Surface, bounds.x + cgo.X - cgo.TargetX, bounds.y + cgo.Y - cgo.TargetY, bounds.Wdt, bounds.Hgt, 0, 0);
+
+		Application.DDraw->SetPrimaryClipper(ccgo.X, ccgo.Y, ccgo.X + ccgo.Wdt - 1, ccgo.Y + ccgo.Hgt - 1);
+
+		DrawSection(ccgo, **child, plr, fowEnabled);
+
+		Application.DDraw->SetPrimaryClipper(cgo.X, cgo.Y, cgo.X + cgo.Wdt - 1, cgo.Y + cgo.Hgt - 1);
+
+		if (fowEnabled)
+		{
+			lpDDraw->SetClrModMapEnabled(false);
+		}
+
+		DrawParallaxObjects(ccgo, **child);
+
+		if (fowEnabled)
+		{
+			lpDDraw->SetClrModMapEnabled(true);
+		}
+	}
+}
+
+void C4Viewport::DrawParallaxObjects(C4FacetEx &cgo, C4Section &section)
+{
+	// draw custom GUI objects
+	section.Objects.ForeObjects.DrawIfCategory(cgo, Player, C4D_Parallax, false);
 }
 
 void C4Viewport::BlitOutput()
@@ -1164,6 +1212,9 @@ void C4Viewport::AdjustPosition()
 		C4Player *pPlr = Game.Players.Get(Player);
 		int32_t iScrollRange = (std::min)(ViewWdt / 10, ViewHgt / 10);
 		int32_t iExtraBoundsX = 0, iExtraBoundsY = 0;
+
+		C4Section &viewRootSection{GetViewRootSection()};
+
 		if (pPlr->ViewMode == C4PVM_Scrolling)
 		{
 			iScrollRange = 0;
@@ -1172,49 +1223,94 @@ void C4Viewport::AdjustPosition()
 		else
 		{
 			// if view is close to border, allow scrolling
-			if (pPlr->ViewX < ViewportScrollBorder) iExtraBoundsX = std::min<int32_t>(ViewportScrollBorder - pPlr->ViewX, ViewportScrollBorder);
-			else if (pPlr->ViewX >= GBackWdt - ViewportScrollBorder) iExtraBoundsX = std::min<int32_t>(pPlr->ViewX - GBackWdt, 0) + ViewportScrollBorder;
-			if (pPlr->ViewY < ViewportScrollBorder) iExtraBoundsY = std::min<int32_t>(ViewportScrollBorder - pPlr->ViewY, ViewportScrollBorder);
-			else if (pPlr->ViewY >= GBackHgt - ViewportScrollBorder) iExtraBoundsY = std::min<int32_t>(pPlr->ViewY - GBackHgt, 0) + ViewportScrollBorder;
+			if (pPlr->ViewX < ViewportScrollBorder)
+			{
+				iExtraBoundsX = std::min<int32_t>(ViewportScrollBorder - pPlr->ViewX, ViewportScrollBorder);
+			}
+			else if (pPlr->ViewX >= viewRootSection.Landscape.Width - ViewportScrollBorder)
+			{
+				iExtraBoundsX = std::min<int32_t>(pPlr->ViewX - viewRootSection.Landscape.Width, 0) + ViewportScrollBorder;
+			}
+
+			if (pPlr->ViewY < ViewportScrollBorder)
+			{
+				iExtraBoundsY = std::min<int32_t>(ViewportScrollBorder - pPlr->ViewY, ViewportScrollBorder);
+			}
+			else if (pPlr->ViewY >= viewRootSection.Landscape.Height - ViewportScrollBorder)
+			{
+				iExtraBoundsY = std::min<int32_t>(pPlr->ViewY - viewRootSection.Landscape.Height, 0) + ViewportScrollBorder;
+			}
 		}
-		iExtraBoundsX = std::max<int32_t>(iExtraBoundsX, (ViewWdt - GBackWdt) / 2 + 1);
-		iExtraBoundsY = std::max<int32_t>(iExtraBoundsY, (ViewHgt - GBackHgt) / 2 + 1);
+
+		iExtraBoundsX = std::max<int32_t>(iExtraBoundsX, (ViewWdt - viewRootSection.Landscape.Width) / 2 + 1);
+		iExtraBoundsY = std::max<int32_t>(iExtraBoundsY, (ViewHgt - viewRootSection.Landscape.Height) / 2 + 1);
 		// calc target view position
 		int32_t iTargetViewX = pPlr->ViewX - ViewWdt / 2;
 		int32_t iTargetViewY = pPlr->ViewY - ViewHgt / 2;
+		// get view offset
+		std::int32_t viewOffsetX{0};
+		std::int32_t viewOffsetY{0};
+		if (const auto it = ViewOffsets.find(&viewRootSection); it != ViewOffsets.end())
+		{
+			std::tie(viewOffsetX, viewOffsetY) = it->second;
+		}
 		// add mouse auto scroll
-		int32_t iPrefViewX = ViewX - ViewOffsX, iPrefViewY = ViewY - ViewOffsY;
+		int32_t iPrefViewX = ViewX - viewOffsetX, iPrefViewY = ViewY - viewOffsetY;
 		if (pPlr->MouseControl && Game.MouseControl.InitCentered && Config.General.MouseAScroll)
 		{
 			int32_t iAutoScrollBorder = (std::min)((std::min)(ViewWdt / 10, ViewHgt / 10), C4SymbolSize);
 			if (iAutoScrollBorder)
 			{
-				iPrefViewX += BoundBy<int32_t>(0, Game.MouseControl.VpX - ViewWdt + iAutoScrollBorder, Game.MouseControl.VpX - iAutoScrollBorder) * iScrollRange * BoundBy<int32_t>(Config.General.MouseAScroll, 0, 100) / 100 / iAutoScrollBorder;
-				iPrefViewY += BoundBy<int32_t>(0, Game.MouseControl.VpY - ViewHgt + iAutoScrollBorder, Game.MouseControl.VpY - iAutoScrollBorder) * iScrollRange * BoundBy<int32_t>(Config.General.MouseAScroll, 0, 100) / 100 / iAutoScrollBorder;
+				const std::int32_t factor{iScrollRange * BoundBy<int32_t>(Config.General.MouseAScroll, 0, 100) / 100 / iAutoScrollBorder};
+				iPrefViewX += BoundBy<int32_t>(0, Game.MouseControl.VpX - ViewWdt + iAutoScrollBorder, Game.MouseControl.VpX - iAutoScrollBorder) * factor;
+				iPrefViewY += BoundBy<int32_t>(0, Game.MouseControl.VpY - ViewHgt + iAutoScrollBorder, Game.MouseControl.VpY - iAutoScrollBorder) * factor;
 			}
 		}
 		// scroll range
 		iTargetViewX = BoundBy(iPrefViewX, iTargetViewX - iScrollRange, iTargetViewX + iScrollRange);
 		iTargetViewY = BoundBy(iPrefViewY, iTargetViewY - iScrollRange, iTargetViewY + iScrollRange);
 		// bounds
-		iTargetViewX = BoundBy<int32_t>(iTargetViewX, -iExtraBoundsX, GBackWdt - ViewWdt + iExtraBoundsX);
-		iTargetViewY = BoundBy<int32_t>(iTargetViewY, -iExtraBoundsY, GBackHgt - ViewHgt + iExtraBoundsY);
-		// smooth
-		if (dViewX >= 0 && dViewY >= 0)
+		iTargetViewX = BoundBy<int32_t>(iTargetViewX, -iExtraBoundsX, viewRootSection.Landscape.Width - ViewWdt + iExtraBoundsX);
+		iTargetViewY = BoundBy<int32_t>(iTargetViewY, -iExtraBoundsY, viewRootSection.Landscape.Height - ViewHgt + iExtraBoundsY);
+
+		/*static std::size_t counter{0};
+
+		if (++counter == 10)
 		{
-			dViewX += (itofix(iTargetViewX) - dViewX) / BoundBy<int32_t>(Config.General.ScrollSmooth, 1, 50); ViewX = fixtoi(dViewX);
-			dViewY += (itofix(iTargetViewY) - dViewY) / BoundBy<int32_t>(Config.General.ScrollSmooth, 1, 50); ViewY = fixtoi(dViewY);
+			counter = 0;
+			Log(std::format(
+					"iTargetViewX: {}, iTargetViewY: {}, iExtraBoundsX: {}, iExtraBoundsY: {}, iPrefViewX: {}",
+					iTargetViewX,
+					iTargetViewY,
+					iExtraBoundsX,
+					iExtraBoundsY,
+					iPrefViewX
+					).c_str());
+		}*/
+		// smooth
+		if ((previousViewRootSection == &viewRootSection || !previousViewRootSection) && dViewX >= 0 && dViewY >= 0)
+		{
+			dViewX += (itofix(iTargetViewX) - dViewX) / BoundBy<int32_t>(Config.General.ScrollSmooth, 1, 50);
+			dViewY += (itofix(iTargetViewY) - dViewY) / BoundBy<int32_t>(Config.General.ScrollSmooth, 1, 50);
+
+			ViewX = fixtoi(dViewX);
+			ViewY = fixtoi(dViewY);
 		}
 		else
 		{
-			dViewX = itofix(ViewX = iTargetViewX);
-			dViewY = itofix(ViewY = iTargetViewY);
+			ViewX = iTargetViewX;
+			ViewY = iTargetViewY;
+
+			dViewX = itofix(ViewX);
+			dViewY = itofix(ViewY);
 		}
 		// apply offset
-		ViewX += ViewOffsX; ViewY += ViewOffsY;
+		ViewX += viewOffsetX; ViewY += viewOffsetY;
+		// store previous section
+		previousViewRootSection = &viewRootSection;
 	}
 	// NO_OWNER can't scroll
-	if (fIsNoOwnerViewport) { ViewOffsX = 0; ViewOffsY = 0; }
+	if (fIsNoOwnerViewport) { ViewOffsets.clear(); }
 	// clip at borders, update vars
 	UpdateViewPosition();
 }
@@ -1223,41 +1319,78 @@ void C4Viewport::CenterPosition()
 {
 	// center viewport position on map
 	// set center position
-	ViewX = (GBackWdt - ViewWdt) / 2;
-	ViewY = (GBackHgt - ViewHgt) / 2;
+	C4Section &viewRootSection{GetViewRootSection()};
+	ViewX = (viewRootSection.Landscape.Width - ViewWdt) / 2;
+	ViewY = (viewRootSection.Landscape.Height - ViewHgt) / 2;
 	// clips and updates
 	UpdateViewPosition();
 }
 
+C4Section &C4Viewport::GetViewSection()
+{
+	if (C4Player *const plr{Game.Players.Get(Player)}; plr)
+	{
+		return *plr->ViewSection.Denumerated();
+	}
+
+	return *Game.GetActiveSections().front();
+}
+
+C4Section &C4Viewport::GetViewRootSection()
+{
+	if (C4Player *const plr{Game.Players.Get(Player)}; plr)
+	{
+		return plr->ViewSection->GetRootSection();
+	}
+
+	return *Game.GetActiveSections().front();
+}
+
+void C4Viewport::SetViewOffset(C4Section &section, const std::int32_t x, const std::int32_t y)
+{
+	if (fIsNoOwnerViewport)
+	{
+		return;
+	}
+
+	if (x == 0 && y == 0)
+	{
+		ViewOffsets.erase(&section.GetRootSection());
+	}
+	else
+	{
+		ViewOffsets.insert_or_assign(&section.GetRootSection(), std::pair{x, y});
+	}
+}
+
 void C4Viewport::UpdateViewPosition()
 {
+	C4Section &section{GetViewRootSection()};
 	// no-owner viewports should not scroll outside viewing area
 	if (fIsNoOwnerViewport)
 	{
-		if (Application.isFullScreen && GBackWdt < ViewWdt)
+		if (Application.isFullScreen && section.Landscape.Width < ViewWdt)
 		{
-			ViewX = (GBackWdt - ViewWdt) / 2;
+			ViewX = (section.Landscape.Width - ViewWdt) / 2;
 		}
 		else
 		{
-			ViewX = std::min<int32_t>(ViewX, GBackWdt - ViewWdt);
-			ViewX = std::max<int32_t>(ViewX, 0);
+			ViewX = std::clamp(ViewX, 0, section.Landscape.Width - ViewWdt);
 		}
-		if (Application.isFullScreen && GBackHgt < ViewHgt)
+		if (Application.isFullScreen && section.Landscape.Height < ViewHgt)
 		{
-			ViewY = (GBackHgt - ViewHgt) / 2;
+			ViewY = (section.Landscape.Height - ViewHgt) / 2;
 		}
 		else
 		{
-			ViewY = std::min<int32_t>(ViewY, GBackHgt - ViewHgt);
-			ViewY = std::max<int32_t>(ViewY, 0);
+			ViewY = std::clamp(ViewY, 0, section.Landscape.Height - ViewHgt);
 		}
 	}
 	// update borders
 	BorderLeft = std::max<int32_t>(-ViewX, 0);
 	BorderTop = std::max<int32_t>(-ViewY, 0);
-	BorderRight = std::max<int32_t>(ViewWdt - GBackWdt + ViewX, 0);
-	BorderBottom = std::max<int32_t>(ViewHgt - GBackHgt + ViewY, 0);
+	BorderRight = std::max<int32_t>(ViewWdt - section.Landscape.Width + ViewX, 0);
+	BorderBottom = std::max<int32_t>(ViewHgt - section.Landscape.Height + ViewY, 0);
 }
 
 void C4Viewport::Default()
@@ -1274,11 +1407,11 @@ void C4Viewport::Default()
 	SetRegions = nullptr;
 	Regions.Default();
 	dViewX = dViewY = -31337;
-	ViewOffsX = ViewOffsY = 0;
+	ViewOffsets.clear();
 	fIsNoOwnerViewport = false;
 }
 
-void C4Viewport::DrawPlayerInfo(C4FacetEx &cgo)
+void C4Viewport::DrawPlayerInfo(C4FacetEx &cgo, C4Section &section)
 {
 	C4Facet ccgo;
 	if (!ValidPlr(Player)) return;
@@ -1296,7 +1429,7 @@ void C4Viewport::DrawPlayerInfo(C4FacetEx &cgo)
 	}
 
 	// Value gain
-	if ((Game.C4S.Game.ValueGain && Game.Players.Get(Player)->ViewValue)
+	if ((section.C4S.Game.ValueGain && Game.Players.Get(Player)->ViewValue)
 		|| Config.Graphics.ShowPlayerHUDAlways)
 	{
 		int32_t wdt = C4SymbolSize;
@@ -1333,7 +1466,10 @@ bool C4Viewport::Init(int32_t iPlayer, bool fSetTempOnly)
 	Player = iPlayer;
 	if (!fSetTempOnly) fIsNoOwnerViewport = (iPlayer == NO_OWNER);
 	// Owned viewport: clear any flash message explaining observer menu
-	if (ValidPlr(iPlayer)) Game.GraphicsSystem.FlashMessage("");
+	if (ValidPlr(iPlayer))
+	{
+		Game.GraphicsSystem.FlashMessage("");
+	}
 	return true;
 }
 
@@ -1506,6 +1642,16 @@ void C4Viewport::SetOutputSize(int32_t iDrawX, int32_t iDrawY, int32_t iOutX, in
 void C4Viewport::ClearPointers(C4Object *pObj)
 {
 	Regions.ClearPointers(pObj);
+}
+
+void C4Viewport::ClearSectionPointers(C4Section &section)
+{
+	if (previousViewRootSection == &section)
+	{
+		previousViewRootSection = nullptr;
+	}
+
+	ViewOffsets.erase(&section);
 }
 
 void C4Viewport::DrawMouseButtons(C4FacetEx &cgo)

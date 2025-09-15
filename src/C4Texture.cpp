@@ -31,18 +31,16 @@
 
 #include <format>
 
-C4Texture::C4Texture()
+C4Texture::C4Texture(const char *const name, std::shared_ptr<C4Surface> surface32)
+	: Surface32{std::move(surface32)}
 {
-	Name[0] = 0;
-	Surface8 = nullptr;
-	Surface32 = nullptr;
-	Next = nullptr;
+	SCopy(name, Name.data(), C4M_MaxName);
 }
 
-C4Texture::~C4Texture()
+C4Texture::C4Texture(const char *const name, std::shared_ptr<CSurface8> surface8)
+	: Surface8{std::move(surface8)}
 {
-	delete Surface8;
-	delete Surface32;
+	SCopy(name, Name.data(), C4M_MaxName);
 }
 
 C4TexMapEntry::C4TexMapEntry()
@@ -65,23 +63,23 @@ bool C4TexMapEntry::Create(const char *szMaterial, const char *szTexture)
 	return true;
 }
 
-bool C4TexMapEntry::Init()
+bool C4TexMapEntry::Init(C4Section &section)
 {
 	// Find material
-	iMaterialIndex = Game.Material.Get(Material.getData());
-	if (!MatValid(iMaterialIndex))
+	iMaterialIndex = section.Material.Get(Material.getData());
+	if (!section.MatValid(iMaterialIndex))
 	{
 		DebugLog(spdlog::level::err, "Error initializing material {}-{}: Invalid material!", Material.getData(), Texture.getData());
 		return false;
 	}
-	pMaterial = &Game.Material.Map[iMaterialIndex];
+	pMaterial = &section.Material.Map[iMaterialIndex];
 	// Special, hardcoded crap: change <liquid>-Smooth to <liquid>-Liquid
 	const char *szTexture = Texture.getData();
 	if (DensityLiquid(pMaterial->Density))
 		if (SEqualNoCase(szTexture, "Smooth"))
 			szTexture = "Liquid";
 	// Find texture
-	C4Texture *sfcTexture = Game.TextureMap.GetTexture(szTexture);
+	C4Texture *sfcTexture = section.TextureMap.GetTexture(szTexture);
 	if (!sfcTexture)
 	{
 		DebugLog(spdlog::level::err, "Error initializing material {}-{}: Invalid texture!", Material.getData(), Texture.getData());
@@ -96,14 +94,15 @@ bool C4TexMapEntry::Init()
 	if (iOverlayType & C4MatOv_HugeZoom) iZoom = 4;
 	// Create pattern
 	if (sfcTexture->Surface32)
-		MatPattern.Set(sfcTexture->Surface32, iZoom, fMono);
+		MatPattern.Set(sfcTexture->Surface32.get(), iZoom, fMono);
 	else
-		MatPattern.Set(sfcTexture->Surface8, iZoom, fMono);
+		MatPattern.Set(sfcTexture->Surface8.get(), iZoom, fMono);
 	MatPattern.SetColors(pMaterial->Color, pMaterial->Alpha);
 	return true;
 }
 
-C4TextureMap::C4TextureMap()
+C4TextureMap::C4TextureMap(C4Section *const section)
+	: section{section}
 {
 	Default();
 }
@@ -111,6 +110,28 @@ C4TextureMap::C4TextureMap()
 C4TextureMap::~C4TextureMap()
 {
 	Clear();
+}
+
+C4TextureMap::C4TextureMap(const C4TextureMap &other)
+	: section{other.section},
+	  Entry{other.Entry},
+	  textures{other.textures},
+	  fOverloadMaterials{other.fOverloadMaterials},
+	  fOverloadTextures{other.fOverloadTextures},
+	  fInitialized{other.fInitialized},
+	  fEntriesAdded{other.fEntriesAdded}
+{
+}
+
+C4TextureMap &C4TextureMap::operator=(const C4TextureMap &other)
+{
+	Entry = other.Entry;
+	textures = other.textures;
+	fOverloadMaterials = other.fOverloadMaterials;
+	fOverloadTextures = other.fOverloadTextures;
+	fInitialized = other.fInitialized;
+	fEntriesAdded = other.fEntriesAdded;
+	return *this;
 }
 
 bool C4TextureMap::AddEntry(uint8_t byIndex, const char *szMaterial, const char *szTexture)
@@ -124,35 +145,15 @@ bool C4TextureMap::AddEntry(uint8_t byIndex, const char *szMaterial, const char 
 	Entry[byIndex].Create(szMaterial, szTexture);
 	if (fInitialized)
 	{
-		if (!Entry[byIndex].Init())
+		if (!Entry[byIndex].Init(*section))
 		{
 			// Clear entry if it could not be initialized
 			Entry[byIndex].Clear();
 			return false;
 		}
 		// Landscape must be notified (new valid pixel clr)
-		Game.Landscape.HandleTexMapUpdate();
+		section->Landscape.HandleTexMapUpdate();
 	}
-	return true;
-}
-
-bool C4TextureMap::AddTexture(const char *szTexture, C4Surface *sfcSurface)
-{
-	auto texture = std::make_unique<C4Texture>();
-	SCopy(szTexture, texture->Name, C4M_MaxName);
-	texture->Surface32 = sfcSurface;
-	texture->Next = FirstTexture;
-	FirstTexture = texture.release();
-	return true;
-}
-
-bool C4TextureMap::AddTexture(const char *szTexture, CSurface8 *sfcSurface)
-{
-	auto texture = std::make_unique<C4Texture>();
-	SCopy(szTexture, texture->Name, C4M_MaxName);
-	texture->Surface8 = sfcSurface;
-	texture->Next = FirstTexture;
-	FirstTexture = texture.release();
 	return true;
 }
 
@@ -160,13 +161,7 @@ void C4TextureMap::Clear()
 {
 	for (int32_t i = 1; i < C4M_MaxTexIndex; i++)
 		Entry[i].Clear();
-	C4Texture *ctex, *next2;
-	for (ctex = FirstTexture; ctex; ctex = next2)
-	{
-		next2 = ctex->Next;
-		delete ctex;
-	}
-	FirstTexture = nullptr;
+	textures.clear();
 	fInitialized = false;
 }
 
@@ -226,6 +221,19 @@ int32_t C4TextureMap::LoadMap(C4Group &hGroup, const char *szEntryName, bool *pO
 	return iTextures;
 }
 
+bool C4TextureMap::InitFromMapAndExistingTextures(C4Group &group, const char *entryName, const C4TextureMap &other)
+{
+	if (!LoadMap(group, entryName, nullptr, nullptr))
+	{
+		return false;
+	}
+
+	this->textures = other.textures;
+	Init();
+
+	return true;
+}
+
 int32_t C4TextureMap::Init()
 {
 	int32_t iRemoved = 0;
@@ -233,7 +241,7 @@ int32_t C4TextureMap::Init()
 	int32_t i;
 	for (i = 0; i < C4M_MaxTexIndex; i++)
 		if (!Entry[i].isNull())
-			if (!Entry[i].Init())
+			if (!Entry[i].Init(*section))
 			{
 				LogNTr(spdlog::level::err, "Error in TextureMap initialization at entry {}", static_cast<int>(i));
 				Entry[i].Clear();
@@ -263,15 +271,12 @@ bool C4TextureMap::SaveMap(C4Group &hGroup, const char *szEntryName)
 	return hGroup.Add(szEntryName, buf, false, true);
 }
 
-int32_t C4TextureMap::LoadTextures(C4Group &hGroup, C4Group *OverloadFile)
+int32_t C4TextureMap::LoadTextures(C4Group &hGroup)
 {
 	int32_t texnum = 0;
 
-	// overload: load from other file
-	if (OverloadFile) texnum += LoadTextures(*OverloadFile);
-
 	char texname[256 + 1];
-	C4Surface *ctex;
+	std::unique_ptr<C4Surface> ctex;
 	size_t binlen;
 	// newgfx: load PNG-textures first
 	hGroup.ResetSearch();
@@ -285,13 +290,13 @@ int32_t C4TextureMap::LoadTextures(C4Group &hGroup, C4Group *OverloadFile)
 		if (ctex = GroupReadSurfacePNG(hGroup))
 		{
 			SReplaceChar(texname, '.', 0);
-			if (AddTexture(texname, ctex)) texnum++;
-			else delete ctex;
+			textures.emplace_back(texname, std::move(ctex));
+			++texnum;
 		}
 	}
 	// Load all bitmap files from group
 	hGroup.ResetSearch();
-	CSurface8 *ctex8;
+	std::unique_ptr<CSurface8> ctex8;
 	while (hGroup.AccessNextEntry(C4CFN_BitmapFiles, &binlen, texname))
 	{
 		// check if it already exists in the map
@@ -302,8 +307,8 @@ int32_t C4TextureMap::LoadTextures(C4Group &hGroup, C4Group *OverloadFile)
 		{
 			ctex8->AllowColor(0, 2, true);
 			SReplaceChar(texname, '.', 0);
-			if (AddTexture(texname, ctex8)) texnum++;
-			else delete ctex;
+			textures.emplace_back(texname, std::move(ctex8));
+			++texnum;
 		}
 	}
 
@@ -358,47 +363,50 @@ int32_t C4TextureMap::GetIndexMatTex(const char *szMaterialTexture, const char *
 		if (iMatTex = GetIndex(Material.getData(), szDefaultTexture, fAddIfNotExist))
 			return iMatTex;
 	// search material
-	const auto iMaterial = Game.Material.Get(szMaterialTexture);
-	if (!MatValid(iMaterial))
+	const auto iMaterial = section->Material.Get(szMaterialTexture);
+	if (!section->MatValid(iMaterial))
 	{
 		if (szErrorIfFailed) DebugLog(spdlog::level::err, "Error getting MatTex for {}: Invalid material", szErrorIfFailed);
 		return 0;
 	}
 	// return default map entry
-	return Game.Material.Map[iMaterial].DefaultMatTex;
+	return section->Material.Map[iMaterial].DefaultMatTex;
 }
 
 C4Texture *C4TextureMap::GetTexture(const char *szTexture)
 {
-	C4Texture *pTexture;
-	for (pTexture = FirstTexture; pTexture; pTexture = pTexture->Next)
-		if (SEqualNoCase(pTexture->Name, szTexture))
-			return pTexture;
+	for (auto &texture : textures)
+	{
+		if (SEqualNoCase(texture.Name.data(), szTexture))
+		{
+			return &texture;
+		}
+	}
+
 	return nullptr;
 }
 
 bool C4TextureMap::CheckTexture(const char *szTexture)
 {
-	C4Texture *pTexture;
-	for (pTexture = FirstTexture; pTexture; pTexture = pTexture->Next)
-		if (SEqualNoCase(pTexture->Name, szTexture))
+	for (auto &texture : textures)
+	{
+		if (SEqualNoCase(texture.Name.data(), szTexture))
+		{
 			return true;
+		}
+	}
+
 	return false;
 }
 
 const char *C4TextureMap::GetTexture(size_t iIndex)
 {
-	C4Texture *pTexture;
-	size_t cindex;
-	for (pTexture = FirstTexture, cindex = 0; pTexture; pTexture = pTexture->Next, cindex++)
-		if (cindex == iIndex)
-			return pTexture->Name;
-	return nullptr;
+	return iIndex < textures.size() ? textures[iIndex].Name.data() : nullptr;
 }
 
 void C4TextureMap::Default()
 {
-	FirstTexture = nullptr;
+	textures.clear();
 	fEntriesAdded = false;
 	fOverloadMaterials = false;
 	fOverloadTextures = false;

@@ -16,6 +16,7 @@
 
 /* Structures for object and player info components */
 
+#include "C4Def.h"
 #include <C4InfoCore.h>
 
 #include <C4Random.h>
@@ -204,7 +205,7 @@ struct C4PhysInfoNameMap_t { const char *szName; C4PhysicalInfo::Offset off; } C
 	{ nullptr, nullptr }
 };
 
-void C4PhysicalInfo::PromotionUpdate(int32_t iRank, bool fUpdateTrainablePhysicals, C4Def *pTrainDef)
+void C4PhysicalInfo::PromotionUpdate(int32_t iRank, bool fUpdateTrainablePhysicals, C4Section *section, C4Def *pTrainDef)
 {
 	if (iRank >= 0) { CanDig = 1; CanChop = 1; CanConstruct = 1; }
 	if (iRank >= 0) { CanScale = 1; }
@@ -223,7 +224,7 @@ void C4PhysicalInfo::PromotionUpdate(int32_t iRank, bool fUpdateTrainablePhysica
 		for (int32_t iPhysIdx = 0; szPhysName = GetNameByIndex(iPhysIdx, &PhysOff); ++iPhysIdx)
 		{
 			C4Value PhysVal(this->*PhysOff, C4V_Int);
-			if (pTrainDef->Script.Call(PSF_GetFairCrewPhysical, {C4VString(szPhysName), C4VInt(iRank), C4VRef(&PhysVal)}))
+			if (pTrainDef->Script.Call(*section, PSF_GetFairCrewPhysical, {C4VString(szPhysName), C4VInt(iRank), C4VRef(&PhysVal)}))
 			{
 				this->*PhysOff = PhysVal.getInt();
 			}

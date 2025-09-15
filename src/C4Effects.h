@@ -26,6 +26,7 @@
 #include "C4Constants.h"
 #include "C4DeletionTrackable.h"
 #include "C4EnumeratedObjectPtr.h"
+#include "C4Section.h"
 #include "C4ValueList.h"
 
 typedef unsigned long C4ID;
@@ -86,6 +87,8 @@ public:
 	int32_t iTime, iIntervall; // effect time; effect callback intervall
 	int32_t iNumber; // effect number for addressing
 
+	C4Section::EnumeratedPtr section;
+
 	C4Effect *pNext; // next effect in linked list
 
 protected:
@@ -98,12 +101,12 @@ protected:
 	void AssignCallbackFunctions(); // resolve callback function names
 
 public:
-	C4Effect(C4Object *pForObj, const char *szName, int32_t iPrio, int32_t iTimerIntervall, C4Object *pCmdTarget, C4ID idCmdTarget, const C4Value &rVal1, const C4Value &rVal2, const C4Value &rVal3, const C4Value &rVal4, bool fDoCalls, int32_t &riStoredAsNumber, bool passErrors = false);
+	C4Effect(C4Section &section, C4Object *pForObj, const char *szName, int32_t iPrio, int32_t iTimerIntervall, C4Object *pCmdTarget, C4ID idCmdTarget, const C4Value &rVal1, const C4Value &rVal2, const C4Value &rVal3, const C4Value &rVal4, bool fDoCalls, int32_t &riStoredAsNumber, bool passErrors = false);
 	C4Effect(StdCompiler *pComp); // ctor: compile
 	~C4Effect(); // dtor - deletes all following effects
 
 	void EnumeratePointers(); // object pointers to numbers
-	void DenumeratePointers(); // numbers to object pointers
+	void DenumeratePointers(bool onlyFromEffectSection); // numbers to object pointers
 	void ClearPointers(C4Object *pObj); // clear all pointers to object - may kill some effects w/o callback, because the callback target is lost
 
 	void SetDead()              { iPriority = 0; }        // mark effect to be removed in next execution cycle
@@ -166,5 +169,5 @@ class C4Value &FxFireVarCausedBy(C4Effect *pEffect);
 // some other hardcoded engine effects
 void Splash(int32_t tx, int32_t ty, int32_t amt, C4Object *pByObj);
 void Explosion(int32_t tx, int32_t ty, int32_t level, C4Object *inobj, int32_t iCausedBy, C4Object *pByObj, C4ID idEffect, const char *szEffect);
-void Smoke(int32_t tx, int32_t ty, int32_t level, uint32_t dwClr = 0);
-void BubbleOut(int32_t tx, int32_t ty);
+void Smoke(C4Section &section, int32_t tx, int32_t ty, int32_t level, uint32_t dwClr = 0);
+void BubbleOut(C4Section &section, int32_t tx, int32_t ty);

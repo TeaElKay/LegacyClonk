@@ -51,7 +51,7 @@ protected:
 		DensityProvider(class C4Object *pForObject, C4SolidMask &rSolidMaskData)
 			: pForObject(pForObject), rSolidMaskData(rSolidMaskData) {}
 
-		virtual int32_t GetDensity(int32_t x, int32_t y) const override;
+		virtual int32_t GetDensity(C4Landscape &landscape, int32_t x, int32_t y) const override;
 	};
 
 	// Remove the solidmask temporary
@@ -65,8 +65,6 @@ protected:
 
 public:
 	// Linked list of all solidmasks
-	static C4SolidMask *First;
-	static C4SolidMask *Last;
 	C4SolidMask *Prev;
 	C4SolidMask *Next;
 

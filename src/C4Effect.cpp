@@ -56,9 +56,11 @@ C4AulScript *C4Effect::GetCallbackScript()
 	return pSrcScript;
 }
 
-C4Effect::C4Effect(C4Object *pForObj, const char *szName, int32_t iPrio, int32_t iTimerIntervall, C4Object *pCmdTarget, C4ID idCmdTarget, const C4Value &rVal1, const C4Value &rVal2, const C4Value &rVal3, const C4Value &rVal4, bool fDoCalls, int32_t &riStoredAsNumber, bool passErrors)
-	: EffectVars(0)
+C4Effect::C4Effect(C4Section &section, C4Object *pForObj, const char *szName, int32_t iPrio, int32_t iTimerIntervall, C4Object *pCmdTarget, C4ID idCmdTarget, const C4Value &rVal1, const C4Value &rVal2, const C4Value &rVal3, const C4Value &rVal4, bool fDoCalls, int32_t &riStoredAsNumber, bool passErrors)
+	: EffectVars(0), section{&section}
 {
+	this->section.Enumerate();
+
 	C4Effect *pPrev, *pCheck;
 	// assign values
 	SCopy(szName, Name, C4MaxDefString);
@@ -71,7 +73,7 @@ C4Effect::C4Effect(C4Object *pForObj, const char *szName, int32_t iPrio, int32_t
 	idCommandTarget = idCmdTarget;
 	AssignCallbackFunctions();
 	// get effect target
-	C4Effect **ppEffectList = pForObj ? &pForObj->pEffects : &Game.pGlobalEffects;
+	C4Effect **ppEffectList = pForObj ? &pForObj->pEffects : &section.GlobalEffects;
 	// assign a unique number for that object
 	iNumber = 1;
 	for (pCheck = *ppEffectList; pCheck; pCheck = pCheck->pNext)
@@ -126,7 +128,7 @@ C4Effect::C4Effect(C4Object *pForObj, const char *szName, int32_t iPrio, int32_t
 		if (pForObj && !pForObj->Status) return; // this will be invalid!
 		iPriority = iPrio; // validate effect now
 		if (pFnStart)
-			if (pFnStart->Exec(pCommandTarget, {C4VObj(pForObj), C4VInt(iNumber), C4VInt(0), rVal1, rVal2, rVal3, rVal4}, true, true).getInt() == C4Fx_Start_Deny)
+			if (pFnStart->Exec(section, pCommandTarget, {C4VObj(pForObj), C4VInt(iNumber), C4VInt(0), rVal1, rVal2, rVal3, rVal4}, true, true).getInt() == C4Fx_Start_Deny)
 				// the effect denied to start: assume it hasn't, and mark it dead
 				SetDead();
 		if (fRemoveUpper && pNext && pFnStart)
@@ -177,22 +179,27 @@ void C4Effect::EnumeratePointers()
 	C4Effect *pEff = this;
 	do
 	{
+		// section
+		pEff->section.Enumerate();
 		// command target
 		pEff->pCommandTarget.Enumerate();
 		// effect var denumeration: not necessary, because this is done while saving
 	} while (pEff = pEff->pNext);
 }
 
-void C4Effect::DenumeratePointers()
+void C4Effect::DenumeratePointers(const bool onlyFromEffectSection)
 {
 	// denum in all effects
 	C4Effect *pEff = this;
 	do
 	{
+		// section
+		pEff->section.Denumerate();
+		C4Section *sectionToUse{onlyFromEffectSection ? pEff->section.Denumerated() : nullptr};
 		// command target
-		pEff->pCommandTarget.Denumerate();
+		pEff->pCommandTarget.Denumerate(sectionToUse);
 		// variable pointers
-		pEff->EffectVars.DenumeratePointers();
+		pEff->EffectVars.DenumeratePointers(sectionToUse);
 		// assign any callback functions
 		pEff->AssignCallbackFunctions();
 	} while (pEff = pEff->pNext);
@@ -279,7 +286,7 @@ int32_t C4Effect::Check(C4Object *pForObj, const char *szCheckEffect, int32_t iP
 	{
 		if (!pCheck->IsDead() && pCheck->pFnEffect && pCheck->iPriority >= iPrio)
 		{
-			int32_t iResult = pCheck->pFnEffect->Exec(pCheck->pCommandTarget, {C4VString(szCheckEffect), C4VObj(pForObj), C4VInt(pCheck->iNumber), C4Value(), rVal1, rVal2, rVal3, rVal4}, passErrors, true).getInt();
+			int32_t iResult = pCheck->pFnEffect->Exec(**pCheck->section, pCheck->pCommandTarget, {C4VString(szCheckEffect), C4VObj(pForObj), C4VInt(pCheck->iNumber), C4Value(), rVal1, rVal2, rVal3, rVal4}, passErrors, true).getInt();
 			if (iResult == C4Fx_Effect_Deny)
 				// effect denied
 				return C4Fx_Effect_Deny;
@@ -319,7 +326,7 @@ int32_t C4Effect::Check(C4Object *pForObj, const char *szCheckEffect, int32_t iP
 void C4Effect::Execute(C4Object *pObj)
 {
 	// get effect list
-	C4Effect **ppEffectList = pObj ? &pObj->pEffects : &Game.pGlobalEffects;
+	C4Effect **ppEffectList = pObj ? &pObj->pEffects : &section->GlobalEffects;
 	// execute all effects not marked as dead
 	C4Effect *pEffect = this, **ppPrevEffect = ppEffectList;
 	do
@@ -342,7 +349,7 @@ void C4Effect::Execute(C4Object *pObj)
 			if (pEffect->iIntervall && !(pEffect->iTime % pEffect->iIntervall))
 				if (pEffect->pFnTimer)
 				{
-					if (pEffect->pFnTimer->Exec(pEffect->pCommandTarget, {C4VObj(pObj), C4VInt(pEffect->iNumber), C4VInt(pEffect->iTime)}, false, true).getInt() == C4Fx_Execute_Kill)
+					if (pEffect->pFnTimer->Exec(**pEffect->section, pEffect->pCommandTarget, {C4VObj(pObj), C4VInt(pEffect->iNumber), C4VInt(pEffect->iTime)}, false, true).getInt() == C4Fx_Execute_Kill)
 					{
 						// safety: this class got deleted!
 						if (pObj && !pObj->Status) return;
@@ -378,7 +385,7 @@ void C4Effect::Kill(C4Object *pObj)
 		// this happens only if a lower priority effect removes an upper priority effect in its add- or removal-call
 		if (pFnStart && iPriority != 1)
 		{
-			pFnStart->Exec(pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(C4FxCall_TempAddForRemoval)}, false, true);
+			pFnStart->Exec(**section, pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(C4FxCall_TempAddForRemoval)}, false, true);
 			if (deletionTracker.IsDeleted())
 			{
 				return;
@@ -389,7 +396,7 @@ void C4Effect::Kill(C4Object *pObj)
 	int32_t iPrevPrio = iPriority; SetDead();
 	if (pFnStop)
 	{
-		if (pFnStop->Exec(pCommandTarget, {C4VObj(pObj), C4VInt(iNumber)}, false, true).getInt() == C4Fx_Stop_Deny)
+		if (pFnStop->Exec(**section, pCommandTarget, {C4VObj(pObj), C4VInt(iNumber)}, false, true).getInt() == C4Fx_Stop_Deny)
 		{
 			// effect denied to be removed: recover
 			iPriority = iPrevPrio;
@@ -414,7 +421,7 @@ void C4Effect::ClearAll(C4Object *pObj, int32_t iClearFlag)
 	int32_t iPrevPrio = iPriority;
 	SetDead();
 	if (pFnStop)
-		if (pFnStop->Exec(pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(iClearFlag)}, false, true).getInt() == C4Fx_Stop_Deny)
+		if (pFnStop->Exec(**section, pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(iClearFlag)}, false, true).getInt() == C4Fx_Stop_Deny)
 		{
 			// this stop-callback might have deleted the object and then denied its own removal
 			// must not modify self in this case...
@@ -431,7 +438,7 @@ void C4Effect::DoDamage(C4Object *pObj, int32_t &riDamage, int32_t iDamageType, 
 	do
 	{
 		if (!pEff->IsDead() && pEff->pFnDamage)
-			riDamage = pEff->pFnDamage->Exec(pEff->pCommandTarget, {C4VObj(pObj), C4VInt(pEff->iNumber), C4VInt(riDamage), C4VInt(iDamageType), C4VInt(iCausePlr)}, false, true).getInt();
+			riDamage = pEff->pFnDamage->Exec(**pEff->section, pEff->pCommandTarget, {C4VObj(pObj), C4VInt(pEff->iNumber), C4VInt(riDamage), C4VInt(iDamageType), C4VInt(iCausePlr)}, false, true).getInt();
 		if (pObj && !pObj->Status) return;
 	} while ((pEff = pEff->pNext) && riDamage);
 }
@@ -453,7 +460,7 @@ C4Value C4Effect::DoCall(C4Object *pObj, const char *szFn, const C4Value &rVal1,
 	// call it
 	C4AulFunc *pFn = pSrcScript->GetFuncRecursive(std::format(PSF_FxCustom, +Name, szFn).c_str());
 	if (!pFn) return C4Value();
-	return pFn->Exec(pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), rVal1, rVal2, rVal3, rVal4, rVal5, rVal6, rVal7}, passErrors, true, convertNilToIntBool);
+	return pFn->Exec(**section, pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), rVal1, rVal2, rVal3, rVal4, rVal5, rVal6, rVal7}, passErrors, true, convertNilToIntBool);
 }
 
 void C4Effect::OnObjectChangedDef(C4Object *pObj)
@@ -486,7 +493,7 @@ void C4Effect::TempRemoveUpperEffects(C4Object *pObj, bool fTempRemoveThis, C4Ef
 	{
 		FlipActive();
 		// temp callbacks only for higher priority effects
-		if (pFnStop && iPriority != 1) pFnStop->Exec(pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(C4FxCall_Temp), C4VBool(true)}, false, true);
+		if (pFnStop && iPriority != 1) pFnStop->Exec(**section, pCommandTarget, {C4VObj(pObj), C4VInt(iNumber), C4VInt(C4FxCall_Temp), C4VBool(true)}, false, true);
 		if (!*ppLastRemovedEffect) *ppLastRemovedEffect = this;
 	}
 }
@@ -502,7 +509,7 @@ void C4Effect::TempReaddUpperEffects(C4Object *pObj, C4Effect *pLastReaddEffect)
 		if (pEff->IsInactiveAndNotDead())
 		{
 			pEff->FlipActive();
-			if (pEff->pFnStart && pEff->iPriority != 1) pEff->pFnStart->Exec(pEff->pCommandTarget, {C4VObj(pObj), C4VInt(pEff->iNumber), C4VInt(C4FxCall_Temp)}, false, true);
+			if (pEff->pFnStart && pEff->iPriority != 1) pEff->pFnStart->Exec(**pEff->section, pEff->pCommandTarget, {C4VObj(pObj), C4VInt(pEff->iNumber), C4VInt(C4FxCall_Temp)}, false, true);
 		}
 		// done?
 		if (pEff == pLastReaddEffect) break;
@@ -525,6 +532,19 @@ void C4Effect::CompileFunc(StdCompiler *pComp)
 	pComp->Value(pCommandTarget); pComp->Separator();
 	// read ID
 	pComp->Value(mkC4IDAdapt(idCommandTarget));
+
+	// read section
+	if (pComp->Separator())
+	{
+		pComp->Value(section);
+	}
+	else
+	{
+		assert(pComp->isCompiler());
+		pComp->Warn("Effect section missing, assuming 0!");
+		section.SetNumber(0);
+	}
+
 	pComp->Separator(StdCompiler::SEP_END); // ')'
 	// read variables
 	if (pComp->isCompiler() || EffectVars.GetSize() > 0)
@@ -573,8 +593,8 @@ int32_t FnFxFireStart(C4AulContext *ctx, C4Object *pObj, int32_t iNumber, int32_
 	// In extinguishing material
 	bool fFireCaused = true;
 	int32_t iMat;
-	if (MatValid(iMat = GBackMat(pObj->x, pObj->y)))
-		if (Game.Material.Map[iMat].Extinguisher)
+	if (pObj->Section->MatValid(iMat = pObj->Section->Landscape.GetMat(pObj->x, pObj->y)))
+		if (pObj->Section->Material.Map[iMat].Extinguisher)
 		{
 			// blasts should changedef in water, too!
 			if (fBlasted) if (pObj->Def->BurnTurnTo != C4ID_None) pObj->ChangeDef(pObj->Def->BurnTurnTo);
@@ -595,7 +615,7 @@ int32_t FnFxFireStart(C4AulContext *ctx, C4Object *pObj, int32_t iNumber, int32_
 	// Detach attached objects
 	cobj = nullptr;
 	if (!pObj->Def->IncompleteActivity && !pObj->Def->NoBurnDecay)
-		while (cobj = Game.FindObject(0, 0, 0, 0, 0, OCF_All, nullptr, pObj, nullptr, nullptr, ANY_OWNER, cobj))
+		while (cobj = pObj->Section->FindObject(0, 0, 0, 0, 0, OCF_All, nullptr, pObj, nullptr, nullptr, ANY_OWNER, cobj))
 			if ((cobj->Action.Act > ActIdle) && (cobj->Def->ActMap[cobj->Action.Act].Procedure == DFA_ATTACH))
 				cobj->SetAction(ActIdle);
 	// fire caused?
@@ -766,7 +786,7 @@ int32_t FnFxFireTimer(C4AulContext *ctx, C4Object *pObj, int32_t iNumber, int32_
 		}
 
 		// OK; create it!
-		Game.Particles.Create(pPartDef, float(iX) + fRot[0] * iPx + fRot[1] * iPy, float(iY) + fRot[2] * iPx + fRot[3] * iPy, iXDir / 10.0f, iYDir / 10.0f, iSize / 10.0f, dwClr, pParticleList, pObj);
+		pObj->Section->Particles.Create(pPartDef, float(iX) + fRot[0] * iPx + fRot[1] * iPy, float(iY) + fRot[2] * iPx + fRot[3] * iPy, iXDir / 10.0f, iYDir / 10.0f, iSize / 10.0f, dwClr, pParticleList, pObj);
 	}
 
 	return C4Fx_OK;
@@ -801,28 +821,28 @@ C4String *FnFxFireInfo(C4AulContext *ctx, C4Object *pObj, int32_t iNumber)
 void Splash(int32_t tx, int32_t ty, int32_t amt, C4Object *pByObj)
 {
 	// Splash only if there is free space above
-	if (GBackSemiSolid(tx, ty - 15)) return;
+	if (pByObj->Section->Landscape.GBackSemiSolid(tx, ty - 15)) return;
 	// get back mat
-	int32_t iMat = GBackMat(tx, ty);
+	int32_t iMat = pByObj->Section->Landscape.GetMat(tx, ty);
 	// check liquid
-	if (MatValid(iMat))
-		if (DensityLiquid(Game.Material.Map[iMat].Density) && Game.Material.Map[iMat].Instable)
+	if (pByObj->Section->MatValid(iMat))
+		if (DensityLiquid(pByObj->Section->Material.Map[iMat].Density) && pByObj->Section->Material.Map[iMat].Instable)
 		{
 			int32_t sy = ty;
-			while (GBackLiquid(tx, sy) && sy > ty - 20 && sy >= 0) sy--;
+			while (pByObj->Section->Landscape.GBackLiquid(tx, sy) && sy > ty - 20 && sy >= 0) sy--;
 			// Splash bubbles and liquid
 			for (int32_t cnt = 0; cnt < amt; cnt++)
 			{
 				// force argument evaluation order
 				const auto r2 = Random(16);
 				const auto r1 = Random(16);
-				BubbleOut(tx + r1 - 8, ty + r2 - 6);
-				if (GBackLiquid(tx, ty) && !GBackSemiSolid(tx, sy))
+				BubbleOut(*pByObj->Section, tx + r1 - 8, ty + r2 - 6);
+				if (pByObj->Section->Landscape.GBackLiquid(tx, ty) && !pByObj->Section->Landscape.GBackSemiSolid(tx, sy))
 				{
 					// force argument evaluation order
 					const auto r2 = FIXED100(-Random(200));
 					const auto r1 = FIXED100(Random(151) - 75);
-					Game.PXS.Create(Game.Landscape.ExtractMaterial(tx, ty),
+					pByObj->Section->PXS.Create(pByObj->Section->Landscape.ExtractMaterial(tx, ty),
 						itofix(tx), itofix(sy),
 						r1,
 						r2);
@@ -844,33 +864,33 @@ int32_t GetSmokeLevel()
 	return Config.Graphics.SmokeLevel;
 }
 
-void BubbleOut(int32_t tx, int32_t ty)
+void BubbleOut(C4Section &section, int32_t tx, int32_t ty)
 {
 	// No bubbles from nowhere
-	if (!GBackSemiSolid(tx, ty)) return;
+	if (!section.Landscape.GBackSemiSolid(tx, ty)) return;
 	// User-defined smoke level
 	int32_t SmokeLevel = GetSmokeLevel();
 	// Enough bubbles out there already
-	if (Game.Objects.ObjectCount(C4Id("FXU1")) >= SmokeLevel) return;
+	if (section.Objects.ObjectCount(C4Id("FXU1")) >= SmokeLevel) return;
 	// Create bubble
-	Game.CreateObject(C4Id("FXU1"), nullptr, NO_OWNER, tx, ty);
+	section.CreateObject(C4Id("FXU1"), nullptr, NO_OWNER, tx, ty);
 }
 
-void Smoke(int32_t tx, int32_t ty, int32_t level, uint32_t dwClr)
+void Smoke(C4Section &section, int32_t tx, int32_t ty, int32_t level, uint32_t dwClr)
 {
 	if (Game.Particles.pSmoke)
 	{
-		Game.Particles.Create(Game.Particles.pSmoke, float(tx), float(ty) - level / 2, 0.0f, 0.0f, float(level), dwClr);
+		section.Particles.Create(Game.Particles.pSmoke, float(tx), float(ty) - level / 2, 0.0f, 0.0f, float(level), dwClr);
 		return;
 	}
 	// User-defined smoke level
 	int32_t SmokeLevel = GetSmokeLevel();
 	// Enough smoke out there already
-	if (Game.Objects.ObjectCount(C4Id("FXS1")) >= SmokeLevel) return;
+	if (section.Objects.ObjectCount(C4Id("FXS1")) >= SmokeLevel) return;
 	// Create smoke
 	level = BoundBy<int32_t>(level, 3, 32);
 	C4Object *pObj;
-	if (pObj = Game.CreateObjectConstruction(C4Id("FXS1"), nullptr, NO_OWNER, tx, ty, FullCon * level / 32))
+	if (pObj = section.CreateObjectConstruction(C4Id("FXS1"), nullptr, NO_OWNER, tx, ty, FullCon * level / 32))
 		pObj->Call(PSF_Activate);
 }
 
@@ -886,10 +906,10 @@ void Explosion(int32_t tx, int32_t ty, int32_t level, C4Object *inobj, int32_t i
 	if (!container)
 	{
 		// Incinerate landscape
-		if (!Game.Landscape.Incinerate(tx, ty))
-			if (!Game.Landscape.Incinerate(tx, ty - 10))
-				if (!Game.Landscape.Incinerate(tx - 5, ty - 5))
-					Game.Landscape.Incinerate(tx + 5, ty - 5);
+		if (!pByObj->Section->Landscape.Incinerate(tx, ty))
+			if (!pByObj->Section->Landscape.Incinerate(tx, ty - 10))
+				if (!pByObj->Section->Landscape.Incinerate(tx - 5, ty - 5))
+					pByObj->Section->Landscape.Incinerate(tx + 5, ty - 5);
 		// Create blast object or particle
 		C4Object *pBlast;
 		C4ParticleDef *pPrtDef = Game.Particles.pBlast;
@@ -903,19 +923,19 @@ void Explosion(int32_t tx, int32_t ty, int32_t level, C4Object *inobj, int32_t i
 		// create particle
 		if (pPrtDef)
 		{
-			Game.Particles.Create(pPrtDef, static_cast<float>(tx), static_cast<float>(ty), 0.0f, 0.0f, static_cast<float>(level), 0);
+			pByObj->Section->Particles.Create(pPrtDef, static_cast<float>(tx), static_cast<float>(ty), 0.0f, 0.0f, static_cast<float>(level), 0);
 			if (SEqual2(pPrtDef->Name.getData(), "Blast"))
-				Game.Particles.Cast(Game.Particles.pFSpark, level / 5 + 1, static_cast<float>(tx), static_cast<float>(ty), level, level / 2 + 1.0f, 0x00ef0000, level + 1.0f, 0xffff1010);
+				pByObj->Section->Particles.Cast(Game.Particles.pFSpark, level / 5 + 1, static_cast<float>(tx), static_cast<float>(ty), level, level / 2 + 1.0f, 0x00ef0000, level + 1.0f, 0xffff1010);
 		}
-		else if (pBlast = Game.CreateObjectConstruction(idEffect ? idEffect : C4Id("FXB1"), pByObj, iCausedBy, tx, ty + level, FullCon * level / 20))
+		else if (pBlast = pByObj->Section->CreateObjectConstruction(idEffect ? idEffect : C4Id("FXB1"), pByObj, iCausedBy, tx, ty + level, FullCon * level / 20))
 			pBlast->Call(PSF_Activate);
 	}
 	// Blast objects
-	Game.BlastObjects(tx, ty, level, inobj, iCausedBy, pByObj);
-	if (container != inobj) Game.BlastObjects(tx, ty, level, container, iCausedBy, pByObj);
+	pByObj->Section->BlastObjects(tx, ty, level, inobj, iCausedBy, pByObj);
+	if (container != inobj) pByObj->Section->BlastObjects(tx, ty, level, container, iCausedBy, pByObj);
 	if (!container)
 	{
 		// Blast free landscape. After blasting objects so newly mined materials don't get flinged
-		Game.Landscape.BlastFree(tx, ty, level, grade, iCausedBy);
+		pByObj->Section->Landscape.BlastFree(tx, ty, level, grade, iCausedBy);
 	}
 }

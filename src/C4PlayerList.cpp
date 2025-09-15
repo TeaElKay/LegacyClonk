@@ -208,11 +208,11 @@ bool C4PlayerList::Remove(int iPlayer, bool fDisconnect, bool fNoCalls)
 bool C4PlayerList::RemoveUnjoined(int32_t iPlayer)
 {
 	// Savegame resume missing player: Remove player objects only
-	C4Object *pObj;
-	for (C4ObjectLink *clnk = Game.Objects.First; clnk && (pObj = clnk->Obj); clnk = clnk->Next)
-		if (pObj->Status)
-			if (pObj->IsPlayerObject(iPlayer))
-				pObj->AssignRemoval(true);
+	for (C4Object *const obj : Game.GetAllObjectsWithStatus())
+	{
+		if (obj->IsPlayerObject(iPlayer))
+			obj->AssignRemoval(true);
+	}
 	return true;
 }
 
@@ -261,14 +261,14 @@ bool C4PlayerList::Remove(C4Player *pPlr, bool fDisconnect, bool fNoCalls)
 	delete pPlr;
 
 	// Validate object owners
-	Game.Objects.ValidateOwners();
+	Game.ValidateOwners();
 
 	// Update console
 	Console.UpdateMenus();
 	return true;
 }
 
-C4Player *C4PlayerList::Join(const char *szFilename, bool fScenarioInit, int iAtClient, const char *szAtClientName, C4PlayerInfo *pInfo)
+C4Player *C4PlayerList::Join(const char *szFilename, bool fScenarioInit, int iAtClient, const char *szAtClientName, C4PlayerInfo *pInfo, C4Section &initialSection)
 {
 	assert(pInfo);
 
@@ -308,7 +308,7 @@ C4Player *C4PlayerList::Join(const char *szFilename, bool fScenarioInit, int iAt
 	if (pLast) pLast->Next = pPlr; else First = pPlr;
 
 	// Init
-	if (!pPlr->Init(GetFreeNumber(), iAtClient, szAtClientName, szFilename, fScenarioInit, pInfo))
+	if (!pPlr->Init(GetFreeNumber(), iAtClient, szAtClientName, szFilename, fScenarioInit, pInfo, initialSection))
 	{
 		Remove(pPlr, false, false); Log(C4ResStrTableKey::IDS_PRC_JOINFAIL); return nullptr;
 	}

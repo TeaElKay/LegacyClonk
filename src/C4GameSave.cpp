@@ -136,33 +136,33 @@ bool C4GameSave::SaveScenarioSections()
 	return true;
 }
 
-bool C4GameSave::SaveLandscape()
+bool C4GameSave::SaveLandscape(C4Section &section, C4Group &group)
 {
 	// exact?
-	if (Game.Landscape.Mode == C4LSC_Exact || GetForceExactLandscape())
+	if (section.Landscape.Mode == C4LSC_Exact || GetForceExactLandscape())
 	{
 		C4DebugRecOff DBGRECOFF;
 		// Landscape
-		Game.Objects.RemoveSolidMasks();
+		section.Objects.RemoveSolidMasks();
 		bool fSuccess;
-		if (Game.Landscape.Mode == C4LSC_Exact)
-			fSuccess = !!Game.Landscape.Save(*pSaveGroup);
+		if (section.Landscape.Mode == C4LSC_Exact)
+			fSuccess = !!section.Landscape.SaveExact(group);
 		else
-			fSuccess = !!Game.Landscape.SaveDiff(*pSaveGroup, !IsSynced());
-		Game.Objects.PutSolidMasks();
+			fSuccess = !!section.Landscape.SaveDiff(group, !IsSynced());
+		section.Objects.PutSolidMasks();
 		if (!fSuccess) return false;
 		DBGRECOFF.Clear();
 		// PXS
-		if (!Game.PXS.Save(*pSaveGroup)) return false;
+		if (!section.PXS.Save(group)) return false;
 		// MassMover (create copy, may not modify running data)
-		C4MassMoverSet MassMoverSet;
-		MassMoverSet.Copy(Game.MassMover);
-		if (!MassMoverSet.Save(*pSaveGroup)) return false;
+		C4MassMoverSet MassMoverSet{section};
+		MassMoverSet.Copy(section.MassMover);
+		if (!MassMoverSet.Save(group)) return false;
 		// Material enumeration
-		if (!Game.Material.SaveEnumeration(*pSaveGroup)) return false;
+		if (!section.Material.SaveEnumeration(group)) return false;
 	}
 	// static / dynamic
-	if (Game.Landscape.Mode == C4LSC_Static)
+	if (section.Landscape.Mode == C4LSC_Static)
 	{
 		// static map
 		// remove old-style landscape.bmp
@@ -171,12 +171,12 @@ bool C4GameSave::SaveLandscape()
 		if (!GetForceExactLandscape())
 		{
 			// save map
-			if (!Game.Landscape.SaveMap(*pSaveGroup)) return false;
+			if (!section.Landscape.SaveMap(group)) return false;
 			// save textures (if changed)
-			if (!Game.Landscape.SaveTextures(*pSaveGroup)) return false;
+			if (!section.Landscape.SaveTextures(group)) return false;
 		}
 	}
-	else if (Game.Landscape.Mode != C4LSC_Exact)
+	else if (section.Landscape.Mode != C4LSC_Exact)
 	{
 		// dynamic map by landscape.txt or scenario core: nothing to save
 		// in fact, it doesn't even make much sense to save the Objects.txt
@@ -192,18 +192,57 @@ bool C4GameSave::SaveRuntimeData()
 	{
 		Log(C4ResStrTableKey::IDS_ERR_SAVE_SCENSECTIONS); return false;
 	}
-	// landscape
-	if (!SaveLandscape()) { Log(C4ResStrTableKey::IDS_ERR_SAVE_LANDSCAPE); return false; }
+
+	if (IsExact())
+	{
+		std::size_t counter{0};
+
+		for (const auto &section : Game.GetNotDeletedSections())
+		{
+			if (!SaveSection(*section, std::format(C4CFN_SavedSection, counter++, section->Number), true))
+			{
+				return false;
+			}
+		}
+	}
+	else
+	{
+		for (const auto &section : Game.GetNotDeletedSections())
+		{
+			C4Group sectGroup;
+			if (section->IsMain())
+			{
+				if (!SaveSection(*section, *pSaveGroup, false))
+				{
+					return false;
+				}
+			}
+			else
+			{
+				const std::string filename{std::format(C4CFN_Section, section->GetNameForSaveGame())};
+				if (sectGroup.OpenAsChild(pSaveGroup, filename.c_str()))
+				{
+					if (!SaveSection(*section, sectGroup, false))
+					{
+						return false;
+					}
+				}
+				else
+				{
+					if (!SaveSection(*section, filename, false))
+					{
+						return false;
+					}
+				}
+			}
+		}
+	}
+
 	// Strings
 	Game.ScriptEngine.Strings.EnumStrings();
 	if (!Game.ScriptEngine.Strings.Save((*pSaveGroup)))
 	{
 		Log(C4ResStrTableKey::IDS_ERR_SAVE_SCRIPTSTRINGS); return false;
-	}
-	// Objects
-	if (!Game.Objects.Save((*pSaveGroup), IsExact(), true))
-	{
-		Log(C4ResStrTableKey::IDS_ERR_SAVE_OBJECTS); return false;
 	}
 	// Round results
 	if (GetSaveUserPlayers()) if (!Game.RoundResults.Save(*pSaveGroup))
@@ -258,6 +297,80 @@ bool C4GameSave::SaveRuntimeData()
 		pSaveGroup->Delete(C4CFN_SavePlayerInfos);
 	}
 	// done, success
+	return true;
+}
+
+bool C4GameSave::SaveSection(C4Section &section, const std::string &filename, const bool saveRuntimeData)
+{
+	pSaveGroup->SetStdOutput(true);
+	std::string tmpFile{Config.AtTempPath(filename.c_str())};
+	MakeTempFilename(tmpFile.data());
+
+	{
+		C4Group tmpGroup;
+		if (!tmpGroup.Open(tmpFile.c_str(), true))
+		{
+			return false;
+		}
+
+		if (!SaveSection(section, tmpGroup, saveRuntimeData))
+		{
+			return false;
+		}
+
+		tmpGroup.Close();
+	}
+
+	if (!pSaveGroup->Move(tmpFile.c_str(), filename.c_str()))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool C4GameSave::SaveSection(C4Section &section, C4Group &group, const bool saveRuntimeData)
+{
+	// landscape
+	if (!SaveLandscape(section, group))
+	{
+		Log(C4ResStrTableKey::IDS_ERR_SAVE_LANDSCAPE);
+		return false;
+	}
+
+	// Objects
+	if (!section.Objects.Save(section, group, IsExact(), true))
+	{
+		Log(C4ResStrTableKey::IDS_ERR_SAVE_OBJECTS);
+		return false;
+	}
+
+	// Save core for non-scenarios
+	if (!IsExact())
+	{
+		C4Scenario c4s;
+		c4s.Animals = rC4S.Animals;
+		c4s.Disasters = rC4S.Disasters;
+		c4s.Environment = rC4S.Environment;
+		c4s.Game = rC4S.Game;
+		c4s.Landscape = rC4S.Landscape;
+		std::ranges::copy(rC4S.PlrStart, c4s.PlrStart);
+		c4s.Weather = rC4S.Weather;
+
+		if (!c4s.Save(group))
+		{
+			return false;
+		}
+	}
+
+	if (saveRuntimeData)
+	{
+		if (!section.SaveRuntimeData(group))
+		{
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -512,7 +625,12 @@ bool C4GameSave::Close()
 		// close if owned group
 		if (fOwnGroup)
 		{
-			fSuccess = !!pSaveGroup->Close();
+			fSuccess = !!pSaveGroup->Save(false);
+			if (!fSuccess)
+			{
+				LogNTr(spdlog::level::err, "Error closing save file group: {}", pSaveGroup->GetError());
+			}
+			pSaveGroup->Close();
 			delete pSaveGroup;
 			fOwnGroup = false;
 		}

@@ -23,6 +23,7 @@
 #include <C4ObjectInfoList.h>
 #include <C4InfoCore.h>
 #include <C4ObjectList.h>
+#include "C4Section.h"
 
 const int32_t C4PVM_Cursor    = 0,
               C4PVM_Target    = 1,
@@ -138,6 +139,7 @@ public:
 	int32_t ControlCount; // controls issued since value was last recorded
 	int32_t ActionCount;  // non-doubled controls since value was last recorded
 	ControlType LastControlType; int32_t LastControlID; // last control to capture perma-pressers in stats
+	C4Section::EnumeratedPtr ViewSection;
 
 public:
 	const char *GetName() const { return Name.getData(); }
@@ -149,6 +151,7 @@ public:
 	void Default();
 	void Clear();
 	void ClearPointers(C4Object *tptr, bool fDeath);
+	void ClearViewSection(C4Section &section);
 	void Execute();
 	void ExecuteControl();
 	void UpdateValue();
@@ -178,9 +181,9 @@ public:
 	bool ObjectCommand(int32_t iCommand, C4Object *pTarget, int32_t iTx, int32_t iTy, C4Object *pTarget2 = nullptr, int32_t iData = 0, int32_t iAddMode = C4P_Command_Set);
 	void ObjectCommand2Obj(C4Object *cObj, int32_t iCommand, C4Object *pTarget, int32_t iX, int32_t iY, C4Object *pTarget2, int32_t iData, int32_t iMode);
 	bool DoPoints(int32_t iChange);
-	bool Init(int32_t iNumber, int32_t iAtClient, const char *szAtClientName, const char *szFilename, bool fScenarioInit, class C4PlayerInfo *pInfo);
+	bool Init(int32_t iNumber, int32_t iAtClient, const char *szAtClientName, const char *szFilename, bool fScenarioInit, class C4PlayerInfo *pInfo, C4Section &initialSection);
 	bool ScenarioAndTeamInit(int32_t idTeam);
-	bool ScenarioInit();
+	bool ScenarioInit(C4Section &section);
 	bool FinalInit(bool fInitialValue);
 	bool Save();
 	bool Save(C4Group &hGroup, bool fSavegame, bool fStoreTiny);
@@ -188,7 +191,7 @@ public:
 	bool Load(const char *szFilename, bool fSavegame, bool fLoadPortraits);
 	static bool Strip(const char *szFilename, bool fAggressive);
 	bool ObjectInCrew(C4Object *tobj);
-	C4Object *Buy(C4ID id, bool fShowErrors, int32_t iForPlr, C4Object *pBuyObj = nullptr); // buy object of player's wealth
+	C4Object *Buy(C4ID id, bool fShowErrors, int32_t iForPlr, C4Section &section, C4Object *pBuyObj = nullptr); // buy object of player's wealth
 	bool Sell2Home(C4Object *tobj);
 	bool CanSell(C4Object *obj) const;
 	bool DoWealth(int32_t change);
@@ -196,8 +199,8 @@ public:
 	void CompileFunc(StdCompiler *pComp);
 	bool LoadRuntimeData(C4Group &hGroup);
 	bool ActivateMenuMain();
-	bool ActivateMenuTeamSelection(bool fFromMain);
-	void DoTeamSelection(int32_t idTeam);
+	bool ActivateMenuTeamSelection(C4Section &section, bool fFromMain);
+	void DoTeamSelection(C4Section &section, int32_t idTeam);
 	C4Object *GetHiRankActiveCrew(bool fSelectedOnly);
 	void SetFoW(bool fEnable);
 	int32_t ActiveCrewCount();
@@ -210,17 +213,17 @@ public:
 	void SyncHomebaseMaterialFromTeam();
 
 protected:
-	void InitControl();
+	void InitControl(C4Section &initialSection);
 	void DenumeratePointers();
 	void EnumeratePointers();
 	void UpdateView();
 	void CheckElimination();
 	void UpdateCounts();
 	void ExecHomeBaseProduction();
-	void PlaceReadyBase(int32_t &tx, int32_t &ty, C4Object **pFirstBase);
-	void PlaceReadyVehic(int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
-	void PlaceReadyMaterial(int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
-	void PlaceReadyCrew(int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
+	void PlaceReadyBase(C4Section &section, int32_t &tx, int32_t &ty, C4Object **pFirstBase);
+	void PlaceReadyVehic(C4Section &section, int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
+	void PlaceReadyMaterial(C4Section &section, int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
+	void PlaceReadyCrew(C4Section &section, int32_t tx1, int32_t tx2, int32_t ty, C4Object *FirstBase);
 
 public:
 	void SetTeamHostility(); // if Team!=0: Set hostile to all players in other teams and allied to all others (both ways)
@@ -230,7 +233,7 @@ public:
 	void EvaluateLeague(bool fDisconnected, bool fWon);
 
 	void FoW2Map(CClrModAddMap &rMap, int iOffX, int iOffY);
-	void FoWGenerators2Map(CClrModAddMap &rMap, int iOffX, int iOffY);
+	void FoWGenerators2Map(CClrModAddMap &rMap, C4Section &viewRootSection, int iOffX, int iOffY);
 	bool FoWIsVisible(int32_t x, int32_t y); // check whether a point in the landscape is visible
 
 	// runtime statistics
@@ -257,5 +260,5 @@ public:
 	// when the player changes team, his color changes. Relfect this in player objects
 	void SetPlayerColor(uint32_t dwNewClr);
 
-	void ApplyForcedControl();
+	void ApplyForcedControl(C4Section &initialSection);
 };

@@ -17,6 +17,7 @@
 
 // Menus attached to objects; script created or internal
 
+#include "C4Game.h"
 #include <C4Include.h>
 #include <C4ObjectMenu.h>
 
@@ -67,7 +68,7 @@ bool C4ObjectMenu::IsCloseDenied()
 			if (Object) fResult = static_cast<bool>(Object->Call(PSF_MenuQueryCancel, pars));
 		}
 		else if (eCallbackType == CB_Scenario)
-			fResult = static_cast<bool>(Game.Script.Call(PSF_MenuQueryCancel, pars));
+			fResult = static_cast<bool>(Game.Script.Call(*section, PSF_MenuQueryCancel, pars));
 		CloseQuerying = false;
 		if (fResult) return true;
 	}
@@ -80,12 +81,19 @@ void C4ObjectMenu::LocalInit(C4Object *pObject, bool fUserMenu)
 	Object = pObject;
 	UserMenu = fUserMenu;
 	ParentObject = GetParentObject();
-	if (pObject) eCallbackType = CB_Object; else eCallbackType = CB_Scenario;
+	if (pObject)
+	{
+		eCallbackType = CB_Object;
+	}
+	else
+	{
+		eCallbackType = CB_Scenario;
+	}
 }
 
-bool C4ObjectMenu::Init(C4FacetExSurface &fctSymbol, const char *szEmpty, C4Object *pObject, int32_t iExtra, int32_t iExtraData, int32_t iId, int32_t iStyle, bool fUserMenu)
+bool C4ObjectMenu::Init(C4FacetExSurface &fctSymbol, C4Section &section, const char *szEmpty, C4Object *pObject, int32_t iExtra, int32_t iExtraData, int32_t iId, int32_t iStyle, bool fUserMenu)
 {
-	if (!DoInit(fctSymbol, szEmpty, iExtra, iExtraData, iId, iStyle)) return false;
+	if (!DoInit(fctSymbol, section, szEmpty, iExtra, iExtraData, iId, iStyle)) return false;
 	LocalInit(pObject, fUserMenu);
 	return true;
 }
@@ -99,7 +107,7 @@ void C4ObjectMenu::OnSelectionChanged(int32_t iNewSelection)
 		if (eCallbackType == CB_Object && Object)
 			Object->Call(PSF_MenuSelection, pars);
 		else if (eCallbackType == CB_Scenario)
-			Game.Script.Call(PSF_MenuSelection, pars);
+			Game.Script.Call(*section, PSF_MenuSelection, pars);
 	}
 }
 
@@ -114,10 +122,11 @@ void C4ObjectMenu::ClearPointers(C4Object *pObj)
 
 C4Object *C4ObjectMenu::GetParentObject()
 {
-	C4Object *cObj; C4ObjectLink *cLnk;
-	for (cLnk = Game.Objects.First; cLnk && (cObj = cLnk->Obj); cLnk = cLnk->Next)
-		if (cObj->Menu == this)
-			return cObj;
+	auto allObjects = Game.GetAllObjects();
+	if (const auto it = std::ranges::find(allObjects, this, &C4Object::Menu); it != std::ranges::end(allObjects))
+	{
+		return *it;
+	}
 	return nullptr;
 }
 
@@ -208,17 +217,17 @@ bool C4ObjectMenu::DoRefillInternal(bool &rfRefilled)
 	{
 		// Clear items
 		ClearItems();
-		// Base buying disabled? Fail.
-		if (~Game.C4S.Game.Realism.BaseFunctionality & BASEFUNC_Buy) return false;
 		// Refill target
 		if (!(pTarget = RefillObject)) return false;
+		// Base buying disabled? Fail.
+		if (~pTarget->Section->C4S.Game.Realism.BaseFunctionality & BASEFUNC_Buy) return false;
 		// Add base owner's homebase material
 		if (!(pPlayer = Game.Players.Get(pTarget->Base))) return false;
 		C4Player *pBuyPlayer = Object ? Game.Players.Get(Object->Owner) : nullptr;
 		C4ID idDef;
 		for (cnt = 0; idDef = pPlayer->HomeBaseMaterial.GetID(Game.Defs, C4D_All, cnt, &iCount); cnt++)
 		{
-			pDef = C4Id2Def(idDef);
+			pDef = Game.Defs.ID2Def(idDef);
 			if (!pDef) continue; // skip invalid defs
 			// Caption
 			caption = LoadResStr(C4ResStrTableKey::IDS_MENU_BUY, pDef->GetName());
@@ -228,7 +237,7 @@ bool C4ObjectMenu::DoRefillInternal(bool &rfRefilled)
 			command = std::format("AppendCommand(this,\"Buy\",Object({}),{},0,,0,{})&&ExecuteCommand()", pTarget->Number, 1, C4IdText(pDef->id));
 			command2 = std::format("AppendCommand(this,\"Buy\",Object({}),{},0,,0,{})&&ExecuteCommand()", pTarget->Number, iCount, C4IdText(pDef->id));
 			// Buying value
-			int32_t iBuyValue = pDef->GetValue(pTarget, pPlayer->Number);
+			int32_t iBuyValue = pDef->GetValue(*pTarget->Section, pTarget, pPlayer->Number);
 			// Add menu item
 			Add(caption.c_str(), fctSymbol, command.c_str(), iCount, nullptr, pDef->GetDesc(), pDef->id, command2.c_str(), true, iBuyValue);
 		}
@@ -238,10 +247,10 @@ bool C4ObjectMenu::DoRefillInternal(bool &rfRefilled)
 	case C4MN_Sell:
 		// Clear items
 		ClearItems();
-		// Base sale disabled? Fail.
-		if (~Game.C4S.Game.Realism.BaseFunctionality & BASEFUNC_Sell) return false;
 		// Refill target
 		if (!(pTarget = RefillObject)) return false;
+		// Base sale disabled? Fail.
+		if (~pTarget->Section->C4S.Game.Realism.BaseFunctionality & BASEFUNC_Sell) return false;
 		{
 			// Add target contents items
 			C4ObjectListIterator iter(pTarget->Contents);
@@ -378,7 +387,7 @@ bool C4ObjectMenu::DoRefillInternal(bool &rfRefilled)
 		if (ValidPlr(pTarget->Base) && !Hostile(pTarget->Base, Object->Owner))
 		{
 			// Buy
-			if (Game.C4S.Game.Realism.BaseFunctionality & BASEFUNC_Buy)
+			if (pTarget->Section->C4S.Game.Realism.BaseFunctionality & BASEFUNC_Buy)
 			{
 				command = std::format("SetCommand(this,\"Buy\",Object({}))&&ExecuteCommand()", pTarget->Number);
 				fctSymbol.Create(symbolSize, symbolSize); DrawMenuSymbol(C4MN_Buy, fctSymbol, pTarget->Base, pTarget);
@@ -386,7 +395,7 @@ bool C4ObjectMenu::DoRefillInternal(bool &rfRefilled)
 				fctSymbol.Default();
 			}
 			// Sell
-			if (Game.C4S.Game.Realism.BaseFunctionality & BASEFUNC_Sell)
+			if (pTarget->Section->C4S.Game.Realism.BaseFunctionality & BASEFUNC_Sell)
 			{
 				command = std::format("SetCommand(this,\"Sell\",Object({}))&&ExecuteCommand()", pTarget->Number);
 				fctSymbol.Create(symbolSize, symbolSize); DrawMenuSymbol(C4MN_Sell, fctSymbol, pTarget->Base, pTarget);
@@ -523,7 +532,7 @@ bool C4ObjectMenu::MenuCommand(const char *szCommand, bool fIsCloseCommand)
 
 	case CB_Scenario:
 		// Object menu with scenario script callback
-		Game.Script.DirectExec(nullptr, szCommand, std::format("(internal) C4ObjectMenu::MenuCommand: {}", szCommand).c_str(), false, Game.Script.Strict);
+		Game.Script.DirectExec(*section, nullptr, szCommand, std::format("(internal) C4ObjectMenu::MenuCommand: {}", szCommand).c_str(), false, Game.Script.Strict);
 		break;
 
 	case CB_None:
@@ -560,11 +569,11 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 		if (cObj = pTarget->Action.Target)
 			for (iFunction = 0; pFunction = cObj->Def->Script.GetSFunc(iFunction, "ActionContext"); iFunction++)
 				if (!pFunction->OverloadedBy)
-					if (!pFunction->Condition || pFunction->Condition->Exec(cObj, {C4VObj(Object), C4VID(pFunction->idImage), C4VObj(pTarget)}))
+					if (!pFunction->Condition || pFunction->Condition->Exec(*cObj->Section, cObj, {C4VObj(Object), C4VID(pFunction->idImage), C4VObj(pTarget)}))
 						if (!fCountOnly)
 						{
 							command = std::format("ProtectedCall(Object({}),\"{}\",this,Object({}))", cObj->Number, +pFunction->Name, pTarget->Number);
-							if (pDef = C4Id2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
+							if (pDef = Game.Defs.ID2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
 							Add(pFunction->DescText.getData(), fctSymbol, command.c_str(), C4MN_Item_NoCount, nullptr, pFunction->DescLong.getData());
 							iResult++;
 						}
@@ -579,7 +588,7 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 			if (pEffScript)
 				for (iFunction = 0; pFunction = pEffScript->GetSFunc(iFunction, std::format(PSF_FxCustom, +pEff->Name, "Context").c_str()); iFunction++)
 					if (!pFunction->OverloadedBy)
-						if (!pFunction->Condition || pFunction->Condition->Exec(pEff->pCommandTarget, {C4VObj(pTarget), C4VInt(pEff->iNumber), C4VObj(Object), C4VID(pFunction->idImage)}))
+						if (!pFunction->Condition || pFunction->Condition->Exec(**pEff->section, pEff->pCommandTarget, {C4VObj(pTarget), C4VInt(pEff->iNumber), C4VObj(Object), C4VID(pFunction->idImage)}))
 							if (!fCountOnly)
 							{
 								if (pEff->pCommandTarget)
@@ -595,7 +604,7 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 								{
 									command = std::format("global->~{}(Object({}),{},Object({}),{})", +pFunction->Name, pTarget->Number, static_cast<int>(pEff->iNumber), Object->Number, C4IdText(pFunction->idImage));
 								}
-								if (pDef = C4Id2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
+								if (pDef = Game.Defs.ID2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
 								Add(pFunction->DescText.getData(), fctSymbol, command.c_str(), C4MN_Item_NoCount, nullptr, pFunction->DescLong.getData());
 								fctSymbol.Default();
 								iResult++;
@@ -604,18 +613,18 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 								iResult++;
 		}
 
-	// Script context functions of any objects attached to target (search global list, because attachment objects might be moved just about anywhere...)
-	for (clnk = Game.Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
+	// Script context functions of any objects attached to target (search section list, because attachment objects might be moved just about anywhere...)
+	for (clnk = pTarget->Section->Objects.First; clnk && (cObj = clnk->Obj); clnk = clnk->Next)
 		if (cObj->Status && cObj->Action.Target == pTarget)
 			if (cObj->Action.Act > ActIdle)
 				if (cObj->Def->ActMap[cObj->Action.Act].Procedure == DFA_ATTACH)
 					for (iFunction = 0; pFunction = cObj->Def->Script.GetSFunc(iFunction, "AttachContext"); iFunction++)
 						if (!pFunction->OverloadedBy)
-							if (!pFunction->Condition || pFunction->Condition->Exec(cObj, {C4VObj(Object), C4VID(pFunction->idImage), C4VObj(pTarget)}))
+							if (!pFunction->Condition || pFunction->Condition->Exec(*cObj->Section, cObj, {C4VObj(Object), C4VID(pFunction->idImage), C4VObj(pTarget)}))
 								if (!fCountOnly)
 								{
 									command = std::format("ProtectedCall(Object({}),\"{}\",this,Object({}))", cObj->Number, +pFunction->Name, pTarget->Number);
-									if (pDef = C4Id2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
+									if (pDef = Game.Defs.ID2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
 									Add(pFunction->DescText.getData(), fctSymbol, command.c_str(), C4MN_Item_NoCount, nullptr, pFunction->DescLong.getData());
 									fctSymbol.Default();
 									iResult++;
@@ -633,7 +642,7 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 				// Find function not overloaded
 				if (!pFunction->OverloadedBy)
 					// Function condition valid
-					if (!pFunction->Condition || pFunction->Condition->Exec(pTarget, {C4VObj(Object), C4VID(pFunction->idImage)}))
+					if (!pFunction->Condition || pFunction->Condition->Exec(*pTarget->Section, pTarget, {C4VObj(Object), C4VID(pFunction->idImage)}))
 					{
 						// Get function text
 						strDescText = pFunction->DescText.getData() ? pFunction->DescText.getData() : pTarget->GetName();
@@ -641,7 +650,7 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 						bool fDouble = false;
 						for (iFunction = 0; pFunction2 = pTarget->Def->Script.GetSFunc(iFunction, "Context"); iFunction++)
 							if (!pFunction2->OverloadedBy)
-								if (!pFunction2->Condition || pFunction2->Condition->Exec(pTarget, {C4VObj(Object), C4VID(pFunction2->idImage)}))
+								if (!pFunction2->Condition || pFunction2->Condition->Exec(*pTarget->Section, pTarget, {C4VObj(Object), C4VID(pFunction2->idImage)}))
 									if (SEqual(strDescText, pFunction2->DescText.getData()))
 										fDouble = true;
 						// If so, skip this function to prevent duplicate entries
@@ -653,7 +662,7 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 						// Command
 						command = std::format("ProtectedCall(Object({}),\"{}\",this)", pTarget->Number, +pFunction->Name);
 						// Symbol
-						if (pDef = C4Id2Def(pFunction->idImage))
+						if (pDef = Game.Defs.ID2Def(pFunction->idImage))
 						{
 							pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
 						}
@@ -673,11 +682,11 @@ int32_t C4ObjectMenu::AddContextFunctions(C4Object *pTarget, bool fCountOnly)
 		if (!(pTarget->Category & C4D_Living) || pTarget->GetAlive()) // No dead livings
 			for (iFunction = 0; pFunction = pTarget->Def->Script.GetSFunc(iFunction, "Context"); iFunction++)
 				if (!pFunction->OverloadedBy)
-					if (!pFunction->Condition || pFunction->Condition->Exec(pTarget, {C4VObj(Object), C4VID(pFunction->idImage)}))
+					if (!pFunction->Condition || pFunction->Condition->Exec(*pTarget->Section, pTarget, {C4VObj(Object), C4VID(pFunction->idImage)}))
 						if (!fCountOnly)
 						{
 							command = std::format("ProtectedCall(Object({}),\"{}\",this)", pTarget->Number, +pFunction->Name);
-							if (pDef = C4Id2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
+							if (pDef = Game.Defs.ID2Def(pFunction->idImage)) pDef->Picture2Facet(fctSymbol, 0, pFunction->iImagePhase);
 							Add(pFunction->DescText.getData(), fctSymbol, command.c_str(), C4MN_Item_NoCount, nullptr, pFunction->DescLong.getData());
 							fctSymbol.Default();
 							iResult++;

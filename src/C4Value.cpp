@@ -87,7 +87,7 @@ void C4Value::AddDataRef()
 		Data.Obj->AddRef(this);
 #ifndef NDEBUG
 		// check if the object actually exists
-		if (!Game.Objects.ObjectNumber(Data.Obj))
+		if (!std::ranges::any_of(Game.GetAllSections() | std::views::transform(&C4Section::Objects), [this](C4GameObjects &objects) { return objects.ObjectNumber(Data.Obj); }))
 		{
 			LogNTr(spdlog::level::warn, "using wild object ptr {}!", static_cast<void *>(Data.Obj));
 		}
@@ -308,7 +308,7 @@ C4V_Type C4Value::GuessType()
 		return Type = C4V_C4ID;
 
 	// object?
-	if (Game.Objects.ObjectNumber(Data.Obj))
+	if (Game.ObjectNumber(Data.Obj))
 	{
 		Type = C4V_C4Object;
 		// With the type now known, the destructor will clean up the reference
@@ -624,7 +624,7 @@ std::string C4Value::GetDataString() const
 	case C4V_C4Object:
 	{
 		// obj exists?
-		if (!Game.Objects.ObjectNumber(Data.Obj) && !Game.Objects.InactiveObjects.ObjectNumber(Data.Obj))
+		if (!Game.ObjectNumber(Data.Obj) && !Game.FindFirstInAllObjects([obj{Data.Obj}](C4GameObjects &objects) { return objects.InactiveObjects.ObjectNumber(obj); }))
 			return std::to_string(Data.Raw);
 		else if (Data.Obj)
 			if (Data.Obj->Status == C4OS_NORMAL)
@@ -681,12 +681,12 @@ C4Value C4VString(StdStrBuf &&Str)
 	return C4Value(new C4String(std::forward<StdStrBuf>(Str), &Game.ScriptEngine.Strings));
 }
 
-void C4Value::DenumeratePointer()
+void C4Value::DenumeratePointer(C4Section *const section)
 {
 	// array?
 	if (Type == C4V_Array || Type == C4V_Map)
 	{
-		Data.Container->DenumeratePointers();
+		Data.Container->DenumeratePointers(section);
 		return;
 	}
 	// object types only
@@ -695,9 +695,9 @@ void C4Value::DenumeratePointer()
 	if (Type != C4V_C4ObjectEnum && !Inside<std::intptr_t>(Data.Raw, C4EnumPointer1, C4EnumPointer2)) return;
 	// get obj id, search object
 	const auto iObjID = (Data.Int >= C4EnumPointer1 ? Data.Int - C4EnumPointer1 : Data.Int);
-	C4Object *pObj = Game.Objects.ObjectPointer(iObjID);
+	C4Object *pObj = section ? section->Objects.ObjectPointer(iObjID) : Game.ObjectPointer(iObjID);
 	if (!pObj)
-		pObj = Game.Objects.InactiveObjects.ObjectPointer(iObjID);
+		pObj = section ? section->Objects.InactiveObjects.ObjectPointer(iObjID) : Game.FindFirstInAllObjects([iObjID](C4GameObjects &objects) { return objects.InactiveObjects.ObjectPointer(iObjID); });
 	if (pObj)
 		// set
 		SetObject(pObj);
@@ -768,7 +768,7 @@ void C4Value::CompileFunc(StdCompiler *pComp)
 	// object: save object number instead
 	case C4V_C4Object:
 		if (!fCompiler)
-			iTmp = Game.Objects.ObjectNumber(getObj());
+			iTmp = Game.ObjectNumber(getObj());
 	case C4V_C4ObjectEnum:
 		if (!fCompiler) if (Type == C4V_C4ObjectEnum)
 			iTmp = Data.Int;

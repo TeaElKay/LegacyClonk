@@ -21,6 +21,7 @@
 #include "C4ForwardDeclarations.h"
 #include "C4Rect.h"
 #include <C4Region.h>
+#include "C4Section.h"
 #include "Fixed.h"
 #include "StdColors.h"
 #include <StdWindow.h>
@@ -92,13 +93,14 @@ public:
 	C4Fixed dViewX, dViewY;
 	int32_t ViewX, ViewY, ViewWdt, ViewHgt;
 	int32_t BorderLeft, BorderTop, BorderRight, BorderBottom;
-	int32_t ViewOffsX, ViewOffsY;
+	std::unordered_map<C4Section *, std::pair<std::int32_t, std::int32_t>> ViewOffsets;
 	int32_t DrawX, DrawY;
 	bool fIsNoOwnerViewport; // this viewport is found for searches of NO_OWNER-viewports; even if it has a player assigned (for network obs)
 	void Default();
 	void Clear();
 	void Execute();
 	void ClearPointers(C4Object *pObj);
+	void ClearSectionPointers(C4Section &section);
 	void SetOutputSize(int32_t iDrawX, int32_t iDrawY, int32_t iOutX, int32_t iOutY, int32_t iOutWdt, int32_t iOutHgt);
 	void UpdateViewPosition(); // update view position: Clip properly; update border variables
 	bool Init(int32_t iPlayer, bool fSetTempOnly);
@@ -112,6 +114,14 @@ public:
 	bool IsViewportMenu(class C4Menu *pMenu);
 	int32_t GetPlayer() { return Player; }
 	void CenterPosition();
+	C4Section &GetViewSection();
+	C4Section &GetViewRootSection();
+	void SetViewOffset(C4Section &section, std::int32_t x, std::int32_t y);
+
+	auto MapPointToChildSectionPoint(const std::int32_t x, const std::int32_t y)
+	{
+		return GetViewRootSection().PointToChildPoint(x, y);
+	}
 
 protected:
 	int32_t Player;
@@ -122,13 +132,16 @@ protected:
 	CStdGLCtx *pCtx; // rendering context for OpenGL
 	C4ViewportWindow *pWindow;
 	CClrModAddMap ClrModMap; // color modulation map for viewport drawing
+	C4Section *previousViewRootSection{nullptr};
 	void DrawMouseButtons(C4FacetEx &cgo);
 	void DrawPlayerStartup(C4FacetEx &cgo);
 	void Draw(C4FacetEx &cgo, bool fDrawOverlay);
-	void DrawOverlay(C4FacetEx &cgo);
+	void DrawSection(C4FacetEx &cgo, C4Section &section, C4Player *plr, bool fowEnabled);
+	void DrawParallaxObjects(C4FacetEx &cgo, C4Section &section);
+	void DrawOverlay(C4FacetEx &cgo, C4Section &viewSection);
 	void DrawMenu(C4FacetEx &cgo);
 	void DrawCursorInfo(C4FacetEx &cgo);
-	void DrawPlayerInfo(C4FacetEx &cgo);
+	void DrawPlayerInfo(C4FacetEx &cgo, C4Section &section);
 	void DrawPlayerControls(C4FacetEx &cgo);
 	void BlitOutput();
 	void AdjustPosition();

@@ -88,6 +88,19 @@ void CBltTransform::TransformPoint(float &rX, float &rY)
 	rX = fX; // apply temp
 }
 
+CPattern::CPattern(const CPattern &pattern)
+	: sfcPattern32{pattern.sfcPattern32},
+	  sfcPattern8{pattern.sfcPattern8},
+	  CachedPattern{pattern.CachedPattern},
+	  Wdt{pattern.Wdt},
+	  Hgt{pattern.Hgt},
+	  Zoom{pattern.Zoom},
+	  Monochrome{pattern.Monochrome},
+	  pClrs{pattern.pClrs},
+	  pAlpha{pattern.pAlpha}
+{
+}
+
 CPattern &CPattern::operator=(const CPattern &nPattern)
 {
 	pClrs        = nPattern.pClrs;
@@ -95,21 +108,7 @@ CPattern &CPattern::operator=(const CPattern &nPattern)
 	sfcPattern8  = nPattern.sfcPattern8;
 	sfcPattern32 = nPattern.sfcPattern32;
 	if (sfcPattern32) sfcPattern32->Lock();
-	delete[] CachedPattern;
-	if (nPattern.CachedPattern)
-	{
-		if (!sfcPattern32)
-		{
-			throw std::runtime_error{"Cached pattern without surface to back it"};
-		}
-
-		CachedPattern = new uint32_t[sfcPattern32->Wdt * sfcPattern32->Hgt];
-		memcpy(CachedPattern, nPattern.CachedPattern, sfcPattern32->Wdt * sfcPattern32->Hgt * 4);
-	}
-	else
-	{
-		CachedPattern = nullptr;
-	}
+	CachedPattern = nPattern.CachedPattern;
 	Wdt        = nPattern.Wdt;
 	Hgt        = nPattern.Hgt;
 	Zoom       = nPattern.Zoom;
@@ -132,7 +131,7 @@ bool CPattern::Set(C4Surface *sfcSource, int iZoom, bool fMonochrome)
 	Zoom = iZoom;
 	// set flags
 	Monochrome = fMonochrome;
-	CachedPattern = new uint32_t[Wdt * Hgt];
+	CachedPattern= std::make_shared_for_overwrite<std::uint32_t[]>(Wdt * Hgt);
 	for (int y = 0; y < Hgt; ++y)
 		for (int x = 0; x < Wdt; ++x)
 		{
@@ -155,7 +154,7 @@ bool CPattern::Set(CSurface8 *sfcSource, int iZoom, bool fMonochrome)
 	Zoom = iZoom;
 	// set flags
 	Monochrome = fMonochrome;
-	CachedPattern = nullptr;
+	CachedPattern.reset();
 	return true;
 }
 
@@ -181,7 +180,7 @@ void CPattern::Clear()
 		sfcPattern32 = nullptr;
 	}
 	sfcPattern8 = nullptr;
-	delete[] CachedPattern; CachedPattern = nullptr;
+	CachedPattern.reset();
 }
 
 bool CPattern::PatternClr(int iX, int iY, uint8_t &byClr, uint32_t &dwClr, CStdPalette &rPal) const
